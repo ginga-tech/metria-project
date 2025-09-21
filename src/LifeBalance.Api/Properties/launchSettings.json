@@ -1,0 +1,14 @@
+{
+  "profiles": {
+    "LifeBalance.Api": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "dotnetRunMessages": true,
+      "applicationUrl": "https://localhost:7205;http://localhost:5104"
+    }
+  },
+  "$schema": "https://json.schemastore.org/launchsettings.json"
+}
