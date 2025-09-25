@@ -7,6 +7,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 {
     public DbSet<User> Users => Set<User>();
     public DbSet<Assessment> Assessments => Set<Assessment>();
+    public DbSet<Goal> Goals => Set<Goal>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -31,6 +32,22 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
              .WithMany(u => u.Assessments)
              .HasForeignKey(x => x.UserId)
              .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<Goal>(e =>
+        {
+            e.ToTable("goals");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Text).HasMaxLength(500).IsRequired();
+            e.Property(x => x.Done).IsRequired();
+            e.Property(x => x.WeekId).HasMaxLength(10).IsRequired();
+            e.Property(x => x.CreatedAtUtc).IsRequired();
+            e.Property(x => x.UpdatedAtUtc).IsRequired();
+            e.HasOne(x => x.User)
+             .WithMany()
+             .HasForeignKey(x => x.UserId)
+             .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(x => new { x.UserId, x.WeekId });
         });
     }
 }

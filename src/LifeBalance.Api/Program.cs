@@ -147,7 +147,7 @@ app.MapGet("/api/me", (ClaimsPrincipal user) =>
     return Results.Ok(new { email });
 }).RequireAuthorization();
 
-app.MapPost("/api/assessment", async (ClaimsPrincipal user, AssessmentDto dto, AppDbContext db) =>
+app.MapGet("/api/user/status", async (ClaimsPrincipal user, AppDbContext db) =>
 {
     var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
     if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
@@ -155,12 +155,43 @@ app.MapPost("/api/assessment", async (ClaimsPrincipal user, AssessmentDto dto, A
     var u = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Email == email);
     if (u is null) return Results.Unauthorized();
 
+    // Verifica se tem assessment
+    var hasAssessment = await db.Assessments.AsNoTracking()
+        .AnyAsync(a => a.UserId == u.Id);
+
+    // Verifica se tem metas (temporariamente desabilitado até a tabela ser criada)
+    bool hasGoals = false;
+
+    // Pega a data do último assessment
+    var lastAssessment = await db.Assessments.AsNoTracking()
+        .Where(a => a.UserId == u.Id)
+        .OrderByDescending(a => a.CreatedAtUtc)
+        .Select(a => a.CreatedAtUtc)
+        .FirstOrDefaultAsync();
+
+    return Results.Ok(new {
+        hasAssessment,
+        hasGoals,
+        lastAssessmentDate = lastAssessment == default ? (DateTime?)null : lastAssessment,
+        email = u.Email,
+        name = u.Name
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/assessment", async (ClaimsPrincipal claimsPrincipal, AssessmentDto dto, AppDbContext db) =>
+{
+    var email = claimsPrincipal.FindFirstValue(ClaimTypes.Email) ?? claimsPrincipal.FindFirstValue(JwtRegisteredClaimNames.Email);
+    if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
+
+    var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Email == email);
+    if (user is null) return Results.Unauthorized();
+
     var entity = new Assessment
     {
-        UserId = u.Id,
+        UserId = user.Id,
         ScoresJson = JsonSerializer.Serialize(dto.Scores),
         Average = dto.Average,
-        CreatedAtUtc = DateTime.TryParse(dto.CreatedAtUtc, out var d) ? d : DateTime.UtcNow
+        CreatedAtUtc = DateTime.UtcNow
     };
     db.Assessments.Add(entity);
     await db.SaveChangesAsync();
@@ -247,6 +278,11 @@ app.MapMethods("/api/auth/google/callback", new[] { "GET", "POST" }, async (Http
     var front = cfg["FrontendCallback"];
     if (string.IsNullOrEmpty(front) && !string.IsNullOrEmpty(state)) front = Encoding.UTF8.GetString(Convert.FromBase64String(state));
     if (string.IsNullOrEmpty(front)) front = "/";
+    
+    // CORREÇÃO: Força sempre a porta 5173 para evitar problemas com configuração do Google Console
+    if (front.Contains("localhost:5174")) {
+        front = front.Replace("localhost:5174", "localhost:5173");
+    }
 
     if (string.IsNullOrEmpty(code))
         return Results.Redirect(front);
@@ -305,8 +341,102 @@ app.MapMethods("/api/auth/google/callback", new[] { "GET", "POST" }, async (Http
     return Results.Redirect($"{front}#token={Uri.EscapeDataString(token)}");
 });
 
+// Goals endpoints
+app.MapPost("/api/goals", async (ClaimsPrincipal user, CreateGoalDto dto, AppDbContext db) =>
+{
+    var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
+    if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
+
+    var u = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Email == email);
+    if (u is null) return Results.Unauthorized();
+
+    if (string.IsNullOrWhiteSpace(dto.Text) || dto.Text.Length > 500)
+        return Results.BadRequest("Texto da meta é obrigatório e deve ter no máximo 500 caracteres");
+
+    if (string.IsNullOrWhiteSpace(dto.WeekId) || dto.WeekId.Length > 10)
+        return Results.BadRequest("WeekId é obrigatório e deve ter no máximo 10 caracteres");
+
+    var goal = new Goal
+    {
+        UserId = u.Id,
+        Text = dto.Text.Trim(),
+        WeekId = dto.WeekId,
+        Done = false,
+        CreatedAtUtc = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc),
+        UpdatedAtUtc = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc)
+    };
+
+    db.Goals.Add(goal);
+    await db.SaveChangesAsync();
+
+    return Results.Created($"/api/goals/{goal.Id}", new GoalDto(
+        goal.Id, goal.Text, goal.Done, goal.WeekId, goal.CreatedAtUtc.ToString("O")
+    ));
+}).RequireAuthorization();
+
+app.MapGet("/api/goals/week/{weekId}", async (ClaimsPrincipal user, string weekId, AppDbContext db) =>
+{
+    var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
+    if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
+
+    var u = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Email == email);
+    if (u is null) return Results.Unauthorized();
+
+    var goals = await db.Goals.AsNoTracking()
+        .Where(g => g.UserId == u.Id && g.WeekId == weekId)
+        .OrderByDescending(g => g.CreatedAtUtc)
+        .ToListAsync();
+
+    var goalDtos = goals.Select(g => new GoalDto(
+        g.Id, g.Text, g.Done, g.WeekId, g.CreatedAtUtc.ToString("O")
+    )).ToList();
+
+    return Results.Ok(goalDtos);
+}).RequireAuthorization();
+
+app.MapPut("/api/goals/{id:guid}", async (ClaimsPrincipal user, Guid id, UpdateGoalDto dto, AppDbContext db) =>
+{
+    var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
+    if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
+
+    var u = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Email == email);
+    if (u is null) return Results.Unauthorized();
+
+    var goal = await db.Goals.FirstOrDefaultAsync(g => g.Id == id && g.UserId == u.Id);
+    if (goal is null) return Results.NotFound();
+
+    goal.Done = dto.Done;
+    goal.UpdatedAtUtc = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new GoalDto(
+        goal.Id, goal.Text, goal.Done, goal.WeekId, goal.CreatedAtUtc.ToString("O")
+    ));
+}).RequireAuthorization();
+
+app.MapDelete("/api/goals/{id:guid}", async (ClaimsPrincipal user, Guid id, AppDbContext db) =>
+{
+    var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
+    if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
+
+    var u = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Email == email);
+    if (u is null) return Results.Unauthorized();
+
+    var goal = await db.Goals.FirstOrDefaultAsync(g => g.Id == id && g.UserId == u.Id);
+    if (goal is null) return Results.NotFound();
+
+    db.Goals.Remove(goal);
+    await db.SaveChangesAsync();
+
+    return Results.NoContent();
+}).RequireAuthorization();
+
 app.Run();
 
 record SignupDto(string Name, string Email, string Password);
 record LoginDto(string Email, string Password);
 record AssessmentDto(Dictionary<string,int> Scores, double Average, string CreatedAtUtc);
+record GoalDto(Guid Id, string Text, bool Done, string WeekId, string CreatedAtUtc);
+record CreateGoalDto(string Text, string WeekId);
+record UpdateGoalDto(bool Done);
