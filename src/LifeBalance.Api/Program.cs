@@ -147,6 +147,57 @@ app.MapGet("/api/me", (ClaimsPrincipal user) =>
     return Results.Ok(new { email });
 }).RequireAuthorization();
 
+app.MapGet("/api/user/preferences", async (ClaimsPrincipal user, AppDbContext db) =>
+{
+    var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
+    if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
+
+    var u = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Email == email);
+    if (u is null) return Results.Unauthorized();
+
+    return Results.Ok(new {
+        name = u.Name,
+        email = u.Email,
+        birthDate = u.BirthDate?.ToString("yyyy-MM-dd")
+    });
+}).RequireAuthorization();
+
+app.MapPut("/api/user/preferences", async (ClaimsPrincipal user, UpdatePreferencesDto dto, AppDbContext db) =>
+{
+    var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
+    if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
+
+    var u = await db.Users.FirstOrDefaultAsync(x => x.Email == email);
+    if (u is null) return Results.Unauthorized();
+
+    // Atualiza nome se fornecido
+    if (!string.IsNullOrWhiteSpace(dto.Name))
+    {
+        u.Name = dto.Name.Trim();
+    }
+
+    // Atualiza data de nascimento se fornecida
+    if (!string.IsNullOrWhiteSpace(dto.BirthDate))
+    {
+        if (DateTime.TryParse(dto.BirthDate, out var birthDate))
+        {
+            u.BirthDate = birthDate;
+        }
+    }
+    else
+    {
+        u.BirthDate = null;
+    }
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new {
+        name = u.Name,
+        email = u.Email,
+        birthDate = u.BirthDate?.ToString("yyyy-MM-dd")
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/user/status", async (ClaimsPrincipal user, AppDbContext db) =>
 {
     var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
@@ -440,3 +491,4 @@ record AssessmentDto(Dictionary<string,int> Scores, double Average, string Creat
 record GoalDto(Guid Id, string Text, bool Done, string WeekId, string CreatedAtUtc);
 record CreateGoalDto(string Text, string WeekId);
 record UpdateGoalDto(bool Done);
+record UpdatePreferencesDto(string? Name, string? BirthDate);
