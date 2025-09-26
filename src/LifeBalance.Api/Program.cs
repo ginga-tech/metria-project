@@ -1,10 +1,11 @@
-﻿using System.IdentityModel.Tokens.Jwt;
+using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.ComponentModel.DataAnnotations;
+using System.Globalization;
 using LifeBalance.Api.Data;
 using LifeBalance.Api.Models;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -53,7 +54,8 @@ if (string.IsNullOrWhiteSpace(conn))
     throw new InvalidOperationException("Missing Postgres connection string. Set POSTGRES_CONNECTION or ConnectionStrings:Postgres");
 }
 
-builder.Services.AddDbContext<AppDbContext>(opt => opt.UseNpgsql(conn));
+builder.Services.AddDbContext<AppDbContext>(opt => 
+    opt.UseNpgsql(conn, o => o.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery)));
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -218,10 +220,10 @@ app.MapGet("/api/user/status", async (ClaimsPrincipal user, AppDbContext db) =>
     var hasAssessment = await db.Assessments.AsNoTracking()
         .AnyAsync(a => a.UserId == u.Id);
 
-    // Verifica se tem metas (temporariamente desabilitado até a tabela ser criada)
+    // Verifica se tem metas (temporariamente desabilitado at� a tabela ser criada)
     bool hasGoals = false;
 
-    // Pega a data do último assessment
+    // Pega a data do �ltimo assessment
     var lastAssessment = await db.Assessments.AsNoTracking()
         .Where(a => a.UserId == u.Id)
         .OrderByDescending(a => a.CreatedAtUtc)
@@ -338,7 +340,7 @@ app.MapMethods("/api/auth/google/callback", new[] { "GET", "POST" }, async (Http
     if (string.IsNullOrEmpty(front) && !string.IsNullOrEmpty(state)) front = Encoding.UTF8.GetString(Convert.FromBase64String(state));
     if (string.IsNullOrEmpty(front)) front = "/";
     
-    // CORREÇÃO: Força sempre a porta 5173 para evitar problemas com configuração do Google Console
+    // CORRE��O: For�a sempre a porta 5173 para evitar problemas com configura��o do Google Console
     if (front.Contains("localhost:5174")) {
         front = front.Replace("localhost:5174", "localhost:5173");
     }
@@ -410,25 +412,29 @@ app.MapPost("/api/goals", async (ClaimsPrincipal user, CreateGoalDto dto, AppDbC
     if (u is null) return Results.Unauthorized();
 
     if (string.IsNullOrWhiteSpace(dto.Text) || dto.Text.Length > 500)
-        return Results.BadRequest("Texto da meta é obrigatório e deve ter no máximo 500 caracteres");
+        return Results.BadRequest("Texto da meta � obrigat�rio e deve ter no m�ximo 500 caracteres");
 
     if (!Enum.IsDefined(typeof(GoalPeriod), dto.Period))
-        return Results.BadRequest("Período da meta é inválido");
+        return Results.BadRequest("Per�odo da meta � inv�lido");
 
     if (dto.StartDate >= dto.EndDate)
-        return Results.BadRequest("Data de início deve ser anterior à data de fim");
+        return Results.BadRequest("Data de in�cio deve ser anterior � data de fim");
 
     var goal = new Goal
     {
         UserId = u.Id,
         Text = dto.Text.Trim(),
         Period = dto.Period,
-        StartDate = dto.StartDate,
-        EndDate = dto.EndDate,
+        StartDate = dto.StartDate.Kind == DateTimeKind.Utc ? dto.StartDate : 
+                   dto.StartDate.Kind == DateTimeKind.Local ? dto.StartDate.ToUniversalTime() : 
+                   DateTime.SpecifyKind(dto.StartDate, DateTimeKind.Utc),
+        EndDate = dto.EndDate.Kind == DateTimeKind.Utc ? dto.EndDate : 
+                 dto.EndDate.Kind == DateTimeKind.Local ? dto.EndDate.ToUniversalTime() : 
+                 DateTime.SpecifyKind(dto.EndDate, DateTimeKind.Utc),
         Category = dto.Category?.Trim(),
         Done = false,
-        CreatedAtUtc = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc),
-        UpdatedAtUtc = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc)
+        CreatedAtUtc = DateTime.UtcNow,
+        UpdatedAtUtc = DateTime.UtcNow
     };
 
     db.Goals.Add(goal);
@@ -456,14 +462,32 @@ app.MapGet("/api/goals", async (ClaimsPrincipal user, AppDbContext db, string? p
         query = query.Where(g => g.Period == goalPeriod);
     }
 
-    if (!string.IsNullOrWhiteSpace(startDate) && DateTime.TryParse(startDate, out var start))
+        if (!string.IsNullOrWhiteSpace(startDate))
     {
-        query = query.Where(g => g.StartDate >= start);
+        if (DateTimeOffset.TryParse(startDate, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var start))
+        {
+            var startUtc = start.UtcDateTime;
+            query = query.Where(g => g.StartDate >= startUtc);
+        }
+        else if (DateTime.TryParseExact(startDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var sd))
+        {
+            var sUtc = DateTime.SpecifyKind(sd, DateTimeKind.Utc);
+            query = query.Where(g => g.StartDate >= sUtc);
+        }
     }
 
-    if (!string.IsNullOrWhiteSpace(endDate) && DateTime.TryParse(endDate, out var end))
+        if (!string.IsNullOrWhiteSpace(endDate))
     {
-        query = query.Where(g => g.EndDate <= end);
+        if (DateTimeOffset.TryParse(endDate, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var end))
+        {
+            var endUtc = end.UtcDateTime;
+            query = query.Where(g => g.EndDate <= endUtc);
+        }
+        else if (DateTime.TryParseExact(endDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var ed))
+        {
+            var eUtc = DateTime.SpecifyKind(ed, DateTimeKind.Utc);
+            query = query.Where(g => g.EndDate <= eUtc);
+        }
     }
 
     var goals = await query.OrderByDescending(g => g.CreatedAtUtc).ToListAsync();
@@ -489,7 +513,7 @@ app.MapPut("/api/goals/{id:guid}", async (ClaimsPrincipal user, Guid id, UpdateG
     if (goal is null) return Results.NotFound();
 
     goal.Done = dto.Done;
-    goal.UpdatedAtUtc = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
+    goal.UpdatedAtUtc = DateTime.UtcNow;
 
     await db.SaveChangesAsync();
 
