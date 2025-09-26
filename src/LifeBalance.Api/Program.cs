@@ -10,6 +10,7 @@ using LifeBalance.Api.Models;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using LifeBalance.API.Models.Enums;
 
 var builder = WebApplication.CreateBuilder(args);
 var config = builder.Configuration;

@@ -1,16 +1,7 @@
+using LifeBalance.API.Models.Enums;
 using System.ComponentModel.DataAnnotations;
 
 namespace LifeBalance.Api.Models;
-
-public enum GoalPeriod
-{
-    Weekly,
-    Monthly,
-    Quarterly,
-    Semiannual,
-    Annual,
-    Custom
-}
 
 public class Goal
 {
