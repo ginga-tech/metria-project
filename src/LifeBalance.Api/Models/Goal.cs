@@ -2,6 +2,16 @@ using System.ComponentModel.DataAnnotations;
 
 namespace LifeBalance.Api.Models;
 
+public enum GoalPeriod
+{
+    Weekly,
+    Monthly,
+    Quarterly,
+    Semiannual,
+    Annual,
+    Custom
+}
+
 public class Goal
 {
     [Key]
@@ -17,12 +27,20 @@ public class Goal
     public bool Done { get; set; } = false;
     
     [Required]
-    [MaxLength(10)]
-    public string WeekId { get; set; } = string.Empty; // Format: "2024-42"
+    public GoalPeriod Period { get; set; } = GoalPeriod.Weekly;
     
-    public DateTime CreatedAtUtc { get; set; }
+    [Required]
+    public DateTime StartDate { get; set; }
     
-    public DateTime UpdatedAtUtc { get; set; }
+    [Required]
+    public DateTime EndDate { get; set; }
+    
+    [MaxLength(100)]
+    public string? Category { get; set; }
+    
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    
+    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
     
     // Navigation property
     public User User { get; set; } = null!;

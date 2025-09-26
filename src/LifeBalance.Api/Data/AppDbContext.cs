@@ -41,14 +41,17 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.HasKey(x => x.Id);
             e.Property(x => x.Text).HasMaxLength(500).IsRequired();
             e.Property(x => x.Done).IsRequired();
-            e.Property(x => x.WeekId).HasMaxLength(10).IsRequired();
+            e.Property(x => x.Period).IsRequired().HasConversion<string>();
+            e.Property(x => x.StartDate).IsRequired();
+            e.Property(x => x.EndDate).IsRequired();
+            e.Property(x => x.Category).HasMaxLength(100).IsRequired(false);
             e.Property(x => x.CreatedAtUtc).IsRequired();
             e.Property(x => x.UpdatedAtUtc).IsRequired();
             e.HasOne(x => x.User)
              .WithMany()
              .HasForeignKey(x => x.UserId)
              .OnDelete(DeleteBehavior.Cascade);
-            e.HasIndex(x => new { x.UserId, x.WeekId });
+            e.HasIndex(x => new { x.UserId, x.Period, x.StartDate, x.EndDate });
         });
     }
 }

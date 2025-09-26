@@ -3,6 +3,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.ComponentModel.DataAnnotations;
 using LifeBalance.Api.Data;
 using LifeBalance.Api.Models;
@@ -56,6 +57,12 @@ builder.Services.AddDbContext<AppDbContext>(opt => opt.UseNpgsql(conn));
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddHttpClient();
+
+// Configure JSON options to handle string enums
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+});
 
 var app = builder.Build();
 app.UseCors("frontend");
@@ -404,14 +411,20 @@ app.MapPost("/api/goals", async (ClaimsPrincipal user, CreateGoalDto dto, AppDbC
     if (string.IsNullOrWhiteSpace(dto.Text) || dto.Text.Length > 500)
         return Results.BadRequest("Texto da meta é obrigatório e deve ter no máximo 500 caracteres");
 
-    if (string.IsNullOrWhiteSpace(dto.WeekId) || dto.WeekId.Length > 10)
-        return Results.BadRequest("WeekId é obrigatório e deve ter no máximo 10 caracteres");
+    if (!Enum.IsDefined(typeof(GoalPeriod), dto.Period))
+        return Results.BadRequest("Período da meta é inválido");
+
+    if (dto.StartDate >= dto.EndDate)
+        return Results.BadRequest("Data de início deve ser anterior à data de fim");
 
     var goal = new Goal
     {
         UserId = u.Id,
         Text = dto.Text.Trim(),
-        WeekId = dto.WeekId,
+        Period = dto.Period,
+        StartDate = dto.StartDate,
+        EndDate = dto.EndDate,
+        Category = dto.Category?.Trim(),
         Done = false,
         CreatedAtUtc = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc),
         UpdatedAtUtc = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc)
@@ -421,11 +434,13 @@ app.MapPost("/api/goals", async (ClaimsPrincipal user, CreateGoalDto dto, AppDbC
     await db.SaveChangesAsync();
 
     return Results.Created($"/api/goals/{goal.Id}", new GoalDto(
-        goal.Id, goal.Text, goal.Done, goal.WeekId, goal.CreatedAtUtc.ToString("O")
+        goal.Id, goal.Text, goal.Done, goal.Period.ToString(), 
+        goal.StartDate.ToString("yyyy-MM-dd"), goal.EndDate.ToString("yyyy-MM-dd"),
+        goal.Category, goal.CreatedAtUtc.ToString("O")
     ));
 }).RequireAuthorization();
 
-app.MapGet("/api/goals/week/{weekId}", async (ClaimsPrincipal user, string weekId, AppDbContext db) =>
+app.MapGet("/api/goals", async (ClaimsPrincipal user, AppDbContext db, string? period = null, string? startDate = null, string? endDate = null) =>
 {
     var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
     if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
@@ -433,13 +448,29 @@ app.MapGet("/api/goals/week/{weekId}", async (ClaimsPrincipal user, string weekI
     var u = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Email == email);
     if (u is null) return Results.Unauthorized();
 
-    var goals = await db.Goals.AsNoTracking()
-        .Where(g => g.UserId == u.Id && g.WeekId == weekId)
-        .OrderByDescending(g => g.CreatedAtUtc)
-        .ToListAsync();
+    var query = db.Goals.AsNoTracking().Where(g => g.UserId == u.Id);
+
+    if (!string.IsNullOrWhiteSpace(period) && Enum.TryParse<GoalPeriod>(period, true, out var goalPeriod))
+    {
+        query = query.Where(g => g.Period == goalPeriod);
+    }
+
+    if (!string.IsNullOrWhiteSpace(startDate) && DateTime.TryParse(startDate, out var start))
+    {
+        query = query.Where(g => g.StartDate >= start);
+    }
+
+    if (!string.IsNullOrWhiteSpace(endDate) && DateTime.TryParse(endDate, out var end))
+    {
+        query = query.Where(g => g.EndDate <= end);
+    }
+
+    var goals = await query.OrderByDescending(g => g.CreatedAtUtc).ToListAsync();
 
     var goalDtos = goals.Select(g => new GoalDto(
-        g.Id, g.Text, g.Done, g.WeekId, g.CreatedAtUtc.ToString("O")
+        g.Id, g.Text, g.Done, g.Period.ToString(),
+        g.StartDate.ToString("yyyy-MM-dd"), g.EndDate.ToString("yyyy-MM-dd"),
+        g.Category, g.CreatedAtUtc.ToString("O")
     )).ToList();
 
     return Results.Ok(goalDtos);
@@ -462,7 +493,9 @@ app.MapPut("/api/goals/{id:guid}", async (ClaimsPrincipal user, Guid id, UpdateG
     await db.SaveChangesAsync();
 
     return Results.Ok(new GoalDto(
-        goal.Id, goal.Text, goal.Done, goal.WeekId, goal.CreatedAtUtc.ToString("O")
+        goal.Id, goal.Text, goal.Done, goal.Period.ToString(),
+        goal.StartDate.ToString("yyyy-MM-dd"), goal.EndDate.ToString("yyyy-MM-dd"),
+        goal.Category, goal.CreatedAtUtc.ToString("O")
     ));
 }).RequireAuthorization();
 
@@ -488,7 +521,7 @@ app.Run();
 record SignupDto(string Name, string Email, string Password);
 record LoginDto(string Email, string Password);
 record AssessmentDto(Dictionary<string,int> Scores, double Average, string CreatedAtUtc);
-record GoalDto(Guid Id, string Text, bool Done, string WeekId, string CreatedAtUtc);
-record CreateGoalDto(string Text, string WeekId);
+record GoalDto(Guid Id, string Text, bool Done, string Period, string StartDate, string EndDate, string? Category, string CreatedAtUtc);
+record CreateGoalDto(string Text, GoalPeriod Period, DateTime StartDate, DateTime EndDate, string? Category);
 record UpdateGoalDto(bool Done);
 record UpdatePreferencesDto(string? Name, string? BirthDate);
