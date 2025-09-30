@@ -3,6 +3,7 @@ using System;
 using LifeBalance.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace LifeBalance.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250930201231_AddActiveSubscriptionUniqueIndex")]
+    partial class AddActiveSubscriptionUniqueIndex
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -149,7 +152,7 @@ namespace LifeBalance.Api.Migrations
                     b.HasIndex("UserId")
                         .IsUnique()
                         .HasDatabaseName("ux_subscriptions_user_active")
-                        .HasFilter("(\"Status\" IN ('Active','Trialing'))");
+                        .HasFilter("(\"Status\" IN ('Active','Trialing') AND \"CurrentPeriodEndUtc\" > NOW())");
 
                     b.HasIndex("UserId", "Status", "CurrentPeriodEndUtc");
 

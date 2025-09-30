@@ -12,6 +12,9 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using LifeBalance.API.Models.Enums;
+using LifeBalance.Api.Services;
+using LifeBalance.Api.Repositories;
+using LifeBalance.Api.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 var config = builder.Configuration;
@@ -60,6 +63,8 @@ builder.Services.AddDbContext<AppDbContext>(opt =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddHttpClient();
+builder.Services.AddScoped<ISubscriptionRepository, SubscriptionRepository>();
+builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
 
 // Configure JSON options to handle string enums
 builder.Services.ConfigureHttpJsonOptions(options =>
@@ -237,6 +242,47 @@ app.MapGet("/api/user/status", async (ClaimsPrincipal user, AppDbContext db) =>
         email = u.Email,
         name = u.Name
     });
+}).RequireAuthorization();
+
+// Billing: subscription status (used by frontend paywall)
+app.MapGet("/api/billing/subscription", async (ClaimsPrincipal user, AppDbContext db, ISubscriptionService svc) =>
+{
+    var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
+    if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
+
+    var u = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Email == email);
+    if (u is null) return Results.Unauthorized();
+
+    var (active, plan, renewsAtUtc) = await svc.GetStatusAsync(u.Id);
+    return Results.Ok(new { active, plan = plan?.ToString().ToLowerInvariant(), renewsAtUtc });
+}).RequireAuthorization();
+
+// Billing: subscriptions history
+app.MapGet("/api/billing/subscriptions/history", async (ClaimsPrincipal user, AppDbContext db) =>
+{
+    var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
+    if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
+
+    var u = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Email == email);
+    if (u is null) return Results.Unauthorized();
+
+    var list = await db.Subscriptions.AsNoTracking()
+        .Where(s => s.UserId == u.Id)
+        .OrderByDescending(s => s.CreatedAtUtc)
+        .Select(s => new {
+            provider = s.Provider,
+            plan = s.Plan.ToString().ToLowerInvariant(),
+            status = s.Status.ToString().ToLowerInvariant(),
+            startedAtUtc = s.StartedAtUtc,
+            currentPeriodStartUtc = s.CurrentPeriodStartUtc,
+            currentPeriodEndUtc = s.CurrentPeriodEndUtc,
+            canceledAtUtc = s.CanceledAtUtc,
+            createdAtUtc = s.CreatedAtUtc,
+            updatedAtUtc = s.UpdatedAtUtc
+        })
+        .ToListAsync();
+
+    return Results.Ok(list);
 }).RequireAuthorization();
 
 app.MapPost("/api/assessment", async (ClaimsPrincipal claimsPrincipal, AssessmentDto dto, AppDbContext db) =>
@@ -419,6 +465,17 @@ app.MapPost("/api/goals", async (ClaimsPrincipal user, CreateGoalDto dto, AppDbC
 
     if (dto.StartDate >= dto.EndDate)
         return Results.BadRequest("Data de in�cio deve ser anterior � data de fim");
+
+    // Paywall enforcement: free plan allows up to 5 goals total
+    var now = DateTime.UtcNow;
+    var hasActive = await db.Subscriptions.AsNoTracking()
+        .AnyAsync(s => s.UserId == u.Id && (s.Status == SubscriptionStatus.Active || s.Status == SubscriptionStatus.Trialing) && s.CurrentPeriodEndUtc > now);
+    if (!hasActive)
+    {
+        var totalGoals = await db.Goals.AsNoTracking().CountAsync(g => g.UserId == u.Id);
+        if (totalGoals >= 5)
+            return Results.StatusCode(402); // Payment Required
+    }
 
     var goal = new Goal
     {

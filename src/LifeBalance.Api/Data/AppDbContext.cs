@@ -8,6 +8,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<User> Users => Set<User>();
     public DbSet<Assessment> Assessments => Set<Assessment>();
     public DbSet<Goal> Goals => Set<Goal>();
+    public DbSet<Subscription> Subscriptions => Set<Subscription>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -55,6 +56,32 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
              .HasForeignKey(x => x.UserId)
              .OnDelete(DeleteBehavior.Cascade);
             e.HasIndex(x => new { x.UserId, x.Period, x.StartDate, x.EndDate });
+        });
+
+        modelBuilder.Entity<Subscription>(e =>
+        {
+            e.ToTable("subscriptions");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Provider).HasMaxLength(50).IsRequired();
+            e.Property(x => x.ProviderCustomerId).HasMaxLength(200).IsRequired(false);
+            e.Property(x => x.ProviderSubscriptionId).HasMaxLength(200).IsRequired(false);
+            e.Property(x => x.ProviderPriceId).HasMaxLength(200).IsRequired(false);
+            e.Property(x => x.Plan).HasConversion<string>().IsRequired();
+            e.Property(x => x.Status).HasConversion<string>().IsRequired();
+            e.Property(x => x.CurrentPeriodStartUtc).IsRequired();
+            e.Property(x => x.CurrentPeriodEndUtc).IsRequired();
+            e.Property(x => x.CreatedAtUtc).IsRequired();
+            e.Property(x => x.UpdatedAtUtc).IsRequired();
+            e.HasOne(x => x.User)
+             .WithMany()
+             .HasForeignKey(x => x.UserId)
+             .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(x => x.UserId);
+            e.HasIndex(x => new { x.UserId, x.Status, x.CurrentPeriodEndUtc });
+            e.HasIndex(x => x.UserId)
+             .HasFilter("(\"Status\" IN ('Active','Trialing'))")
+             .IsUnique()
+             .HasDatabaseName("ux_subscriptions_user_active");
         });
     }
 }
