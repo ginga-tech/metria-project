@@ -23,7 +23,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.Email).HasMaxLength(200).IsRequired();
             e.HasIndex(x => x.Email).IsUnique();
             e.Property(x => x.PasswordHash).HasMaxLength(256).IsRequired();
-            e.Property(x => x.BirthDate).IsRequired(false);
+            e.Property(x => x.BirthDate).HasColumnType("date").IsRequired(false);
         });
 
         modelBuilder.Entity<Assessment>(e =>

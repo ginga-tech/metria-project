@@ -1,4 +1,4 @@
-using System.IdentityModel.Tokens.Jwt;
+﻿using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
@@ -194,10 +194,7 @@ app.MapPut("/api/user/preferences", async (ClaimsPrincipal user, UpdatePreferenc
     // Atualiza data de nascimento se fornecida
     if (!string.IsNullOrWhiteSpace(dto.BirthDate))
     {
-        if (DateTime.TryParse(dto.BirthDate, out var birthDate))
-        {
-            u.BirthDate = birthDate;
-        }
+        if (DateTime.TryParseExact(dto.BirthDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var birthDate)) { u.BirthDate = DateTime.SpecifyKind(birthDate, DateTimeKind.Unspecified); }
     }
     else
     {
@@ -225,10 +222,10 @@ app.MapGet("/api/user/status", async (ClaimsPrincipal user, AppDbContext db) =>
     var hasAssessment = await db.Assessments.AsNoTracking()
         .AnyAsync(a => a.UserId == u.Id);
 
-    // Verifica se tem metas (temporariamente desabilitado at� a tabela ser criada)
+    // Verifica se tem metas (temporariamente desabilitado até a tabela ser criada)
     bool hasGoals = false;
 
-    // Pega a data do �ltimo assessment
+    // Pega a data do úlltimo assessment
     var lastAssessment = await db.Assessments.AsNoTracking()
         .Where(a => a.UserId == u.Id)
         .OrderByDescending(a => a.CreatedAtUtc)
@@ -386,7 +383,6 @@ app.MapMethods("/api/auth/google/callback", new[] { "GET", "POST" }, async (Http
     if (string.IsNullOrEmpty(front) && !string.IsNullOrEmpty(state)) front = Encoding.UTF8.GetString(Convert.FromBase64String(state));
     if (string.IsNullOrEmpty(front)) front = "/";
     
-    // CORRE��O: For�a sempre a porta 5173 para evitar problemas com configura��o do Google Console
     if (front.Contains("localhost:5174")) {
         front = front.Replace("localhost:5174", "localhost:5173");
     }
@@ -458,13 +454,13 @@ app.MapPost("/api/goals", async (ClaimsPrincipal user, CreateGoalDto dto, AppDbC
     if (u is null) return Results.Unauthorized();
 
     if (string.IsNullOrWhiteSpace(dto.Text) || dto.Text.Length > 500)
-        return Results.BadRequest("Texto da meta � obrigat�rio e deve ter no m�ximo 500 caracteres");
+        return Results.BadRequest("Texto da meta é obrigatório e deve ter no mï¿½ximo 500 caracteres");
 
     if (!Enum.IsDefined(typeof(GoalPeriod), dto.Period))
-        return Results.BadRequest("Per�odo da meta � inv�lido");
+        return Results.BadRequest("Período da meta inválido");
 
     if (dto.StartDate >= dto.EndDate)
-        return Results.BadRequest("Data de in�cio deve ser anterior � data de fim");
+        return Results.BadRequest("Data de início deve ser anterior à data de fim");
 
     // Paywall enforcement: free plan allows up to 5 goals total
     var now = DateTime.UtcNow;
