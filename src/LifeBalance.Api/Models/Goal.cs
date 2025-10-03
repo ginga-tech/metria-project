@@ -33,6 +33,12 @@ public class Goal
     
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
     
+    // Soft delete fields
+    public bool IsActive { get; set; } = true;
+    
+    [MaxLength(200)]
+    public string? UpdatedBy { get; set; }
+    
     // Navigation property
     public User User { get; set; } = null!;
 }

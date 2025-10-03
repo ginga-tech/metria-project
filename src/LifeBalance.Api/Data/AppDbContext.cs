@@ -51,11 +51,14 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.Category).HasMaxLength(100).IsRequired(false);
             e.Property(x => x.CreatedAtUtc).IsRequired();
             e.Property(x => x.UpdatedAtUtc).IsRequired();
+            e.Property(x => x.IsActive).IsRequired().HasDefaultValue(true);
+            e.Property(x => x.UpdatedBy).HasMaxLength(200).IsRequired(false);
             e.HasOne(x => x.User)
              .WithMany()
              .HasForeignKey(x => x.UserId)
              .OnDelete(DeleteBehavior.Cascade);
             e.HasIndex(x => new { x.UserId, x.Period, x.StartDate, x.EndDate });
+            e.HasIndex(x => new { x.UserId, x.IsActive });
         });
 
         modelBuilder.Entity<Subscription>(e =>

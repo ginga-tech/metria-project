@@ -508,7 +508,7 @@ app.MapGet("/api/goals", async (ClaimsPrincipal user, AppDbContext db, string? p
     var u = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Email == email);
     if (u is null) return Results.Unauthorized();
 
-    var query = db.Goals.AsNoTracking().Where(g => g.UserId == u.Id);
+    var query = db.Goals.AsNoTracking().Where(g => g.UserId == u.Id && g.IsActive);
 
     if (!string.IsNullOrWhiteSpace(period) && Enum.TryParse<GoalPeriod>(period, true, out var goalPeriod))
     {
@@ -562,11 +562,12 @@ app.MapPut("/api/goals/{id:guid}", async (ClaimsPrincipal user, Guid id, UpdateG
     var u = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Email == email);
     if (u is null) return Results.Unauthorized();
 
-    var goal = await db.Goals.FirstOrDefaultAsync(g => g.Id == id && g.UserId == u.Id);
+    var goal = await db.Goals.FirstOrDefaultAsync(g => g.Id == id && g.UserId == u.Id && g.IsActive);
     if (goal is null) return Results.NotFound();
 
     goal.Done = dto.Done;
     goal.UpdatedAtUtc = DateTime.UtcNow;
+    goal.UpdatedBy = email;
 
     await db.SaveChangesAsync();
 
@@ -585,10 +586,14 @@ app.MapDelete("/api/goals/{id:guid}", async (ClaimsPrincipal user, Guid id, AppD
     var u = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Email == email);
     if (u is null) return Results.Unauthorized();
 
-    var goal = await db.Goals.FirstOrDefaultAsync(g => g.Id == id && g.UserId == u.Id);
+    var goal = await db.Goals.FirstOrDefaultAsync(g => g.Id == id && g.UserId == u.Id && g.IsActive);
     if (goal is null) return Results.NotFound();
 
-    db.Goals.Remove(goal);
+    // Soft delete: marca como inativo em vez de remover fisicamente
+    goal.IsActive = false;
+    goal.UpdatedAtUtc = DateTime.UtcNow;
+    goal.UpdatedBy = email;
+
     await db.SaveChangesAsync();
 
     return Results.NoContent();
