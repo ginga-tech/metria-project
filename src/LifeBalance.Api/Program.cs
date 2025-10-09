@@ -10,8 +10,16 @@ using System.Collections.Generic;
 using LifeBalance.Api.Data;
 using LifeBalance.Api.Models;
 using Stripe;
-using Stripe.Checkout;
-using Stripe.BillingPortal;
+// Alias para evitar ambiguidade entre tipos do Stripe e tipos internos
+using CheckoutSession = Stripe.Checkout.Session;
+using CheckoutSessionService = Stripe.Checkout.SessionService;
+using CheckoutSessionCreateOptions = Stripe.Checkout.SessionCreateOptions;
+using CheckoutLineItemOptions = Stripe.Checkout.SessionLineItemOptions;
+using BillingPortalSessionService = Stripe.BillingPortal.SessionService;
+using BillingPortalSessionCreateOptions = Stripe.BillingPortal.SessionCreateOptions;
+using StripeSubscription = Stripe.Subscription;
+using StripeSubscriptionService = Stripe.SubscriptionService;
+using DbSubscription = LifeBalance.Api.Models.Subscription;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -19,6 +27,8 @@ using LifeBalance.API.Models.Enums;
 using LifeBalance.Api.Services;
 using LifeBalance.Api.Repositories;
 using LifeBalance.Api.Models;
+using Microsoft.Extensions.Logging;
+using Microsoft.AspNetCore.Mvc;
 
 var builder = WebApplication.CreateBuilder(args);
 var config = builder.Configuration;
@@ -73,7 +83,7 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddHttpClient();
 builder.Services.AddScoped<ISubscriptionRepository, SubscriptionRepository>();
-builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
+builder.Services.AddScoped<ISubscriptionService, LifeBalance.Api.Services.SubscriptionService>();
 
 // Configure JSON options to handle string enums
 builder.Services.ConfigureHttpJsonOptions(options =>
@@ -91,6 +101,10 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+
+// Health check simples
+app.MapGet("/healthz", () => Results.Ok(new { ok = true, timeUtc = DateTime.UtcNow }))
+   .AllowAnonymous();
 
 // Ensure database exists (migrate then ensure create for MVP)
 using (var scope = app.Services.CreateScope())
@@ -123,7 +137,7 @@ string CreateToken(string email)
 
 bool IsValidEmail(string email) => new EmailAddressAttribute().IsValid(email);
 
-app.MapPost("/api/auth/signup", async (SignupDto dto, AppDbContext db) =>
+app.MapPost("/api/auth/signup", async (SignupDto dto, [FromServices] AppDbContext db) =>
 {
     var name = dto.Name?.Trim();
     var email = dto.Email?.Trim().ToLowerInvariant();
@@ -147,7 +161,7 @@ app.MapPost("/api/auth/signup", async (SignupDto dto, AppDbContext db) =>
     return Results.Ok(new { token, expiresInSeconds = int.Parse(config["Jwt:ExpiresInSeconds"]!) });
 });
 
-app.MapPost("/api/auth/login", async (LoginDto dto, AppDbContext db) =>
+app.MapPost("/api/auth/login", async (LoginDto dto, [FromServices] AppDbContext db) =>
 {
     var email = dto.Email?.Trim().ToLowerInvariant();
     var password = dto.Password ?? string.Empty;
@@ -171,7 +185,7 @@ app.MapGet("/api/me", (ClaimsPrincipal user) =>
     return Results.Ok(new { email });
 }).RequireAuthorization();
 
-app.MapGet("/api/user/preferences", async (ClaimsPrincipal user, AppDbContext db) =>
+app.MapGet("/api/user/preferences", async (ClaimsPrincipal user, [FromServices] AppDbContext db) =>
 {
     var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
     if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
@@ -186,7 +200,7 @@ app.MapGet("/api/user/preferences", async (ClaimsPrincipal user, AppDbContext db
     });
 }).RequireAuthorization();
 
-app.MapPut("/api/user/preferences", async (ClaimsPrincipal user, UpdatePreferencesDto dto, AppDbContext db) =>
+app.MapPut("/api/user/preferences", async (ClaimsPrincipal user, UpdatePreferencesDto dto, [FromServices] AppDbContext db) =>
 {
     var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
     if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
@@ -219,7 +233,7 @@ app.MapPut("/api/user/preferences", async (ClaimsPrincipal user, UpdatePreferenc
     });
 }).RequireAuthorization();
 
-app.MapGet("/api/user/status", async (ClaimsPrincipal user, AppDbContext db) =>
+app.MapGet("/api/user/status", async (ClaimsPrincipal user, [FromServices] AppDbContext db) =>
 {
     var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
     if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
@@ -251,7 +265,7 @@ app.MapGet("/api/user/status", async (ClaimsPrincipal user, AppDbContext db) =>
 }).RequireAuthorization();
 
 // Billing: subscription status (used by frontend paywall)
-app.MapGet("/api/billing/subscription", async (ClaimsPrincipal user, AppDbContext db, ISubscriptionService svc, ILogger log) =>
+app.MapGet("/api/billing/subscription", async (ClaimsPrincipal user, [FromServices] AppDbContext db, [FromServices] ISubscriptionService svc, [FromServices] ILogger<Program> log) =>
 {
     var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
     if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
@@ -265,7 +279,7 @@ app.MapGet("/api/billing/subscription", async (ClaimsPrincipal user, AppDbContex
 }).RequireAuthorization();
 
 // Billing: subscriptions history
-app.MapGet("/api/billing/subscriptions/history", async (ClaimsPrincipal user, AppDbContext db, ILogger log) =>
+app.MapGet("/api/billing/subscriptions/history", async (ClaimsPrincipal user, [FromServices] AppDbContext db, [FromServices] ILogger<Program> log) =>
 {
     var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
     if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
@@ -294,7 +308,7 @@ app.MapGet("/api/billing/subscriptions/history", async (ClaimsPrincipal user, Ap
 }).RequireAuthorization();
 
 // Billing: create Checkout Session (Stripe)
-app.MapPost("/api/billing/checkout", async (ClaimsPrincipal user, CheckoutReq req, AppDbContext db, IConfiguration cfg, ILogger log) =>
+app.MapPost("/api/billing/checkout", async (ClaimsPrincipal user, CheckoutReq req, [FromServices] AppDbContext db, [FromServices] IConfiguration cfg, [FromServices] ILogger<Program> log) =>
 {
     var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
     if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
@@ -311,20 +325,20 @@ app.MapPost("/api/billing/checkout", async (ClaimsPrincipal user, CheckoutReq re
         ? ($"{(cfg["FrontendOrigin"] ?? "http://localhost:5173").TrimEnd('/')}/dashboard?checkout=cancel")
         : req.CancelUrl;
 
-    var options = new SessionCreateOptions
+    var options = new CheckoutSessionCreateOptions
     {
         Mode = "subscription",
         SuccessUrl = successUrl,
         CancelUrl = cancelUrl,
         ClientReferenceId = u.Id.ToString(),
-        LineItems = new List<SessionLineItemOptions>
+        LineItems = new List<CheckoutLineItemOptions>
         {
-            new SessionLineItemOptions { Price = req.PriceId, Quantity = 1 }
+            new CheckoutLineItemOptions { Price = req.PriceId, Quantity = 1 }
         }
     };
     options.CustomerEmail = u.Email;
 
-    var service = new SessionService();
+    var service = new CheckoutSessionService();
     log.LogInformation("POST /api/billing/checkout -> user {Email} ({UserId}) price={PriceId} success={Success} cancel={Cancel}", email, u.Id, req.PriceId, successUrl, cancelUrl);
     var session = await service.CreateAsync(options);
     log.LogInformation("Checkout Session created: id={SessionId} url={Url}", session.Id, session.Url);
@@ -332,7 +346,7 @@ app.MapPost("/api/billing/checkout", async (ClaimsPrincipal user, CheckoutReq re
 }).RequireAuthorization();
 
 // Billing: Customer Portal
-app.MapPost("/api/billing/portal", async (ClaimsPrincipal user, PortalReq req, AppDbContext db, IConfiguration cfg, ILogger log) =>
+app.MapPost("/api/billing/portal", async (ClaimsPrincipal user, PortalReq req, [FromServices] AppDbContext db, [FromServices] IConfiguration cfg, [FromServices] ILogger<Program> log) =>
 {
     var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
     if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
@@ -350,8 +364,8 @@ app.MapPost("/api/billing/portal", async (ClaimsPrincipal user, PortalReq req, A
         return Results.BadRequest("Cliente Stripe não encontrado.");
     }
 
-    var billingPortal = new Stripe.BillingPortal.SessionService();
-    var portalSession = await billingPortal.CreateAsync(new Stripe.BillingPortal.SessionCreateOptions
+    var billingPortal = new BillingPortalSessionService();
+    var portalSession = await billingPortal.CreateAsync(new BillingPortalSessionCreateOptions
     {
         Customer = customerId,
         ReturnUrl = string.IsNullOrWhiteSpace(req?.ReturnUrl)
@@ -363,7 +377,7 @@ app.MapPost("/api/billing/portal", async (ClaimsPrincipal user, PortalReq req, A
 }).RequireAuthorization();
 
 // Billing: Stripe Webhook
-app.MapPost("/api/billing/webhook", async (HttpRequest http, AppDbContext db, IConfiguration cfg, ILogger log) =>
+app.MapPost("/api/billing/webhook", async (HttpRequest http, [FromServices] AppDbContext db, [FromServices] IConfiguration cfg, [FromServices] ILogger<Program> log) =>
 {
     using var reader = new StreamReader(http.Body);
     var json = await reader.ReadToEndAsync();
@@ -418,7 +432,7 @@ app.MapPost("/api/billing/webhook", async (HttpRequest http, AppDbContext db, IC
     {
         case "checkout.session.completed":
         {
-            var session = stripeEvent.Data.Object as Session;
+            var session = stripeEvent.Data.Object as CheckoutSession;
             if (session is null) break;
             log.LogInformation("Event checkout.session.completed: sessionId={SessionId} customer={Customer} subscription={Subscription} clientRef={ClientRef}", session.Id, session.Customer, session.Subscription, session.ClientReferenceId);
 
@@ -449,13 +463,23 @@ app.MapPost("/api/billing/webhook", async (HttpRequest http, AppDbContext db, IC
             }
             log.LogInformation("Resolved userId={UserId} from checkout.session.completed", userId);
 
+            // Helper to read Stripe DateTime fields (compat across SDKs)
+            static DateTime? StripeDate(StripeSubscription s, string prop)
+            {
+                var p = s.GetType().GetProperty(prop);
+                var v = p?.GetValue(s);
+                if (v is DateTime dt) return dt.ToUniversalTime();
+                if (v is long l) return DateTimeOffset.FromUnixTimeSeconds(l).UtcDateTime;
+                return null;
+            }
+
             // If we have a subscription id from the session, fetch and upsert now
-            var subId = session.Subscription as string;
+            var subId = session.SubscriptionId;
             if (!string.IsNullOrWhiteSpace(subId))
             {
                 try
                 {
-                    var subsService = new Stripe.SubscriptionService();
+                    var subsService = new StripeSubscriptionService();
                     var sub = await subsService.GetAsync(subId);
                     var price = sub.Items?.Data?.FirstOrDefault()?.Price;
                     var priceId = price?.Id;
@@ -463,8 +487,8 @@ app.MapPost("/api/billing/webhook", async (HttpRequest http, AppDbContext db, IC
                     var plan = MapPlan(priceId, interval) ?? SubscriptionPlan.Monthly;
                     var status = MapStatus(sub.Status);
 
-                    DateTime? start = sub.CurrentPeriodStart.HasValue ? DateTimeOffset.FromUnixTimeSeconds(sub.CurrentPeriodStart.Value).UtcDateTime : null;
-                    DateTime? end = sub.CurrentPeriodEnd.HasValue ? DateTimeOffset.FromUnixTimeSeconds(sub.CurrentPeriodEnd.Value).UtcDateTime : null;
+                    DateTime? start = StripeDate(sub, "CurrentPeriodStart");
+                    DateTime? end = StripeDate(sub, "CurrentPeriodEnd");
                     log.LogInformation("Fetched sub from session: subId={SubId} customer={CustomerId} status={Status} priceId={PriceId} interval={Interval} plan={Plan} start={Start} end={End}", sub.Id, sub.CustomerId, sub.Status, priceId, interval, plan, start, end);
                     if (start != null && end != null)
                     {
@@ -483,7 +507,7 @@ app.MapPost("/api/billing/webhook", async (HttpRequest http, AppDbContext db, IC
                                     a.UpdatedAtUtc = DateTime.UtcNow;
                                 }
                             }
-                            row = new Subscription
+                            row = new DbSubscription
                             {
                                 Id = Guid.NewGuid(),
                                 UserId = userId,
@@ -511,10 +535,7 @@ app.MapPost("/api/billing/webhook", async (HttpRequest http, AppDbContext db, IC
                             row.Status = status;
                             row.CurrentPeriodStartUtc = start.Value;
                             row.CurrentPeriodEndUtc = end.Value;
-                            if (sub.CanceledAt.HasValue)
-                            {
-                                row.CanceledAtUtc = DateTimeOffset.FromUnixTimeSeconds(sub.CanceledAt.Value).UtcDateTime;
-                            }
+                            row.CanceledAtUtc = StripeDate(sub, "CanceledAt");
                             row.UpdatedAtUtc = DateTime.UtcNow;
                             log.LogInformation("Updated subscription row for subId={SubId} userId={UserId}", sub.Id, userId);
                         }
@@ -530,8 +551,17 @@ app.MapPost("/api/billing/webhook", async (HttpRequest http, AppDbContext db, IC
         case "customer.subscription.updated":
         case "customer.subscription.deleted":
         {
-            var sub = stripeEvent.Data.Object as Stripe.Subscription;
+            var sub = stripeEvent.Data.Object as StripeSubscription;
             if (sub is null) break;
+
+            static DateTime? StripeDate(StripeSubscription s, string prop)
+            {
+                var p = s.GetType().GetProperty(prop);
+                var v = p?.GetValue(s);
+                if (v is DateTime dt) return dt.ToUniversalTime();
+                if (v is long l) return DateTimeOffset.FromUnixTimeSeconds(l).UtcDateTime;
+                return null;
+            }
 
             var price = sub.Items?.Data?.FirstOrDefault()?.Price;
             var priceId = price?.Id;
@@ -540,8 +570,8 @@ app.MapPost("/api/billing/webhook", async (HttpRequest http, AppDbContext db, IC
             var status = MapStatus(sub.Status);
             log.LogInformation("Event {Type}: subId={SubId} customer={CustomerId} stripeStatus={StripeStatus} mappedStatus={Status} priceId={PriceId} interval={Interval} plan={Plan}", stripeEvent.Type, sub.Id, sub.CustomerId, sub.Status, status, priceId, interval, plan);
 
-            DateTime? start = sub.CurrentPeriodStart.HasValue ? DateTimeOffset.FromUnixTimeSeconds(sub.CurrentPeriodStart.Value).UtcDateTime : null;
-            DateTime? end = sub.CurrentPeriodEnd.HasValue ? DateTimeOffset.FromUnixTimeSeconds(sub.CurrentPeriodEnd.Value).UtcDateTime : null;
+            DateTime? start = StripeDate(sub, "CurrentPeriodStart");
+            DateTime? end = StripeDate(sub, "CurrentPeriodEnd");
 
             // Try to resolve user
             Guid userId = Guid.Empty;
@@ -589,7 +619,7 @@ app.MapPost("/api/billing/webhook", async (HttpRequest http, AppDbContext db, IC
                         a.UpdatedAtUtc = DateTime.UtcNow;
                     }
                 }
-                row = new Subscription
+                row = new DbSubscription
                 {
                     Id = Guid.NewGuid(),
                     UserId = userId,
@@ -616,10 +646,7 @@ app.MapPost("/api/billing/webhook", async (HttpRequest http, AppDbContext db, IC
                 row.Status = status;
                 row.CurrentPeriodStartUtc = start.Value;
                 row.CurrentPeriodEndUtc = end.Value;
-                if (sub.CanceledAt.HasValue)
-                {
-                    row.CanceledAtUtc = DateTimeOffset.FromUnixTimeSeconds(sub.CanceledAt.Value).UtcDateTime;
-                }
+                row.CanceledAtUtc = StripeDate(sub, "CanceledAt");
                 row.UpdatedAtUtc = DateTime.UtcNow;
             }
             await db.SaveChangesAsync();
@@ -634,7 +661,157 @@ app.MapPost("/api/billing/webhook", async (HttpRequest http, AppDbContext db, IC
     return Results.Ok();
 });
 
-app.MapPost("/api/assessment", async (ClaimsPrincipal claimsPrincipal, AssessmentDto dto, AppDbContext db) =>
+// Billing: Sync manual (reconciliação) — tenta buscar no Stripe e fazer upsert
+app.MapPost("/api/billing/sync", async (ClaimsPrincipal user, SyncReq req, [FromServices] AppDbContext db, [FromServices] IConfiguration cfg, [FromServices] ILogger<Program> log) =>
+{
+    var emailFromToken = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
+    if (string.IsNullOrWhiteSpace(emailFromToken)) return Results.Unauthorized();
+
+    // Helpers de mapeamento (mesmos do webhook)
+    string? MonthlyPriceId() => Environment.GetEnvironmentVariable("STRIPE_MONTHLY_PRICE_ID") ?? cfg["Stripe:MonthlyPriceId"];
+    string? AnnualPriceId() => Environment.GetEnvironmentVariable("STRIPE_ANNUAL_PRICE_ID") ?? cfg["Stripe:AnnualPriceId"];
+    SubscriptionPlan MapPlan(string? priceId, string? interval)
+    {
+        if (!string.IsNullOrWhiteSpace(priceId))
+        {
+            if (!string.IsNullOrWhiteSpace(MonthlyPriceId()) && priceId == MonthlyPriceId()) return SubscriptionPlan.Monthly;
+            if (!string.IsNullOrWhiteSpace(AnnualPriceId()) && priceId == AnnualPriceId()) return SubscriptionPlan.Annual;
+        }
+        if (!string.IsNullOrWhiteSpace(interval))
+        {
+            if (string.Equals(interval, "month", StringComparison.OrdinalIgnoreCase)) return SubscriptionPlan.Monthly;
+            if (string.Equals(interval, "year", StringComparison.OrdinalIgnoreCase)) return SubscriptionPlan.Annual;
+        }
+        return SubscriptionPlan.Monthly;
+    }
+    SubscriptionStatus MapStatus(string? status) => (status ?? string.Empty).ToLowerInvariant() switch
+    {
+        "incomplete" => SubscriptionStatus.Incomplete,
+        "incomplete_expired" => SubscriptionStatus.IncompleteExpired,
+        "trialing" => SubscriptionStatus.Trialing,
+        "active" => SubscriptionStatus.Active,
+        "past_due" => SubscriptionStatus.PastDue,
+        "canceled" => SubscriptionStatus.Canceled,
+        "unpaid" => SubscriptionStatus.Unpaid,
+        _ => SubscriptionStatus.Incomplete
+    };
+
+    var subService = new StripeSubscriptionService();
+    var custService = new Stripe.CustomerService();
+    StripeSubscription? sub = null;
+
+    try
+    {
+        if (!string.IsNullOrWhiteSpace(req.SubscriptionId))
+        {
+            sub = await subService.GetAsync(req.SubscriptionId);
+        }
+        else if (!string.IsNullOrWhiteSpace(req.CustomerId))
+        {
+            var list = await subService.ListAsync(new Stripe.SubscriptionListOptions { Customer = req.CustomerId, Limit = 1 });
+            sub = list.Data?.FirstOrDefault();
+        }
+        else
+        {
+            var targetEmail = string.IsNullOrWhiteSpace(req.Email) ? emailFromToken : req.Email!.Trim().ToLowerInvariant();
+            // Tenta localizar customer por e-mail
+            var custs = await custService.ListAsync(new Stripe.CustomerListOptions { Email = targetEmail, Limit = 1 });
+            var cust = custs.Data?.FirstOrDefault();
+            if (cust != null)
+            {
+                var list = await subService.ListAsync(new Stripe.SubscriptionListOptions { Customer = cust.Id, Limit = 1 });
+                sub = list.Data?.FirstOrDefault();
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        log.LogError(ex, "/api/billing/sync failed to fetch subscription from Stripe");
+        return Results.BadRequest("Falha ao consultar Stripe");
+    }
+
+    if (sub == null) return Results.NotFound("Assinatura não encontrada no Stripe");
+
+    // Resolve usuário
+    var email = emailFromToken;
+    if (!string.IsNullOrWhiteSpace(sub.CustomerId))
+    {
+        try {
+            var cust = await custService.GetAsync(sub.CustomerId);
+            if (!string.IsNullOrWhiteSpace(cust?.Email)) email = cust.Email;
+        } catch { }
+    }
+    var u = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Email == email);
+    if (u is null) return Results.Unauthorized();
+
+    // Helper to read Stripe DateTime fields (compat)
+    static DateTime? StripeDate(StripeSubscription s, string prop)
+    {
+        var p = s.GetType().GetProperty(prop);
+        var v = p?.GetValue(s);
+        if (v is DateTime dt) return dt.ToUniversalTime();
+        if (v is long l) return DateTimeOffset.FromUnixTimeSeconds(l).UtcDateTime;
+        return null;
+    }
+
+    var price = sub.Items?.Data?.FirstOrDefault()?.Price;
+    var priceId = price?.Id;
+    var interval = price?.Recurring?.Interval;
+    var plan = MapPlan(priceId, interval);
+    var status = MapStatus(sub.Status);
+    DateTime? start = StripeDate(sub, "CurrentPeriodStart");
+    DateTime? end = StripeDate(sub, "CurrentPeriodEnd");
+    if (start == null || end == null) return Results.BadRequest("Assinatura sem período atual");
+
+    var row = await db.Subscriptions.FirstOrDefaultAsync(s => s.ProviderSubscriptionId == sub.Id);
+    if (row == null)
+    {
+        var actives = await db.Subscriptions
+            .Where(s => s.UserId == u.Id && (s.Status == SubscriptionStatus.Active || s.Status == SubscriptionStatus.Trialing) && s.ProviderSubscriptionId != sub.Id)
+            .ToListAsync();
+        foreach (var a in actives)
+        {
+            a.Status = SubscriptionStatus.Canceled;
+            a.CanceledAtUtc = DateTime.UtcNow;
+            a.UpdatedAtUtc = DateTime.UtcNow;
+        }
+        row = new DbSubscription
+        {
+            Id = Guid.NewGuid(),
+            UserId = u.Id,
+            Provider = "stripe",
+            ProviderCustomerId = sub.CustomerId,
+            ProviderSubscriptionId = sub.Id,
+            ProviderPriceId = priceId,
+            Plan = plan,
+            Status = status,
+            StartedAtUtc = (status == SubscriptionStatus.Active || status == SubscriptionStatus.Trialing) ? DateTime.UtcNow : null,
+            CurrentPeriodStartUtc = start.Value,
+            CurrentPeriodEndUtc = end.Value,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
+        };
+        await db.Subscriptions.AddAsync(row);
+    }
+    else
+    {
+        row.UserId = u.Id;
+        row.ProviderCustomerId = sub.CustomerId;
+        row.ProviderPriceId = priceId ?? row.ProviderPriceId;
+        row.Plan = plan;
+        row.Status = status;
+        row.CurrentPeriodStartUtc = start.Value;
+        row.CurrentPeriodEndUtc = end.Value;
+        row.CanceledAtUtc = StripeDate(sub, "CanceledAt");
+        row.UpdatedAtUtc = DateTime.UtcNow;
+    }
+
+    await db.SaveChangesAsync();
+    log.LogInformation("/api/billing/sync upserted subId={SubId} userId={UserId} status={Status}", sub.Id, u.Id, status);
+    return Results.Ok(new { ok = true, subId = sub.Id, status = status.ToString().ToLowerInvariant(), plan = plan.ToString().ToLowerInvariant() });
+}).RequireAuthorization();
+
+app.MapPost("/api/assessment", async (ClaimsPrincipal claimsPrincipal, AssessmentDto dto, [FromServices] AppDbContext db) =>
 {
     var email = claimsPrincipal.FindFirstValue(ClaimTypes.Email) ?? claimsPrincipal.FindFirstValue(JwtRegisteredClaimNames.Email);
     if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
@@ -655,7 +832,7 @@ app.MapPost("/api/assessment", async (ClaimsPrincipal claimsPrincipal, Assessmen
     return Results.Created($"/api/assessment/latest", new { ok = true });
 }).RequireAuthorization();
 
-app.MapGet("/api/assessment/latest", async (ClaimsPrincipal user, AppDbContext db) =>
+app.MapGet("/api/assessment/latest", async (ClaimsPrincipal user, [FromServices] AppDbContext db) =>
 {
     var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
     if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
@@ -708,7 +885,7 @@ app.MapGet("/api/auth/google/start", (HttpContext ctx) =>
     return Results.Redirect(authUrl.ToString());
 });
 
-app.MapMethods("/api/auth/google/callback", new[] { "GET", "POST" }, async (HttpContext ctx, AppDbContext db) =>
+app.MapMethods("/api/auth/google/callback", new[] { "GET", "POST" }, async (HttpContext ctx, [FromServices] AppDbContext db) =>
 {
     var cfg = ctx.RequestServices.GetRequiredService<IConfiguration>();
     var clientId = Environment.GetEnvironmentVariable("GOOGLE_CLIENT_ID") ?? cfg["Google:ClientId"];
@@ -879,7 +1056,7 @@ app.MapPost("/api/goals", async (ClaimsPrincipal user, CreateGoalDto dto, AppDbC
     }
 }).RequireAuthorization();
 
-app.MapGet("/api/goals", async (ClaimsPrincipal user, AppDbContext db, string? period = null, string? startDate = null, string? endDate = null) =>
+app.MapGet("/api/goals", async (ClaimsPrincipal user, [FromServices] AppDbContext db, string? period = null, string? startDate = null, string? endDate = null) =>
 {
     var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
     if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
@@ -933,7 +1110,7 @@ app.MapGet("/api/goals", async (ClaimsPrincipal user, AppDbContext db, string? p
     return Results.Ok(goalDtos);
 }).RequireAuthorization();
 
-app.MapPut("/api/goals/{id:guid}", async (ClaimsPrincipal user, Guid id, UpdateGoalDto dto, AppDbContext db) =>
+app.MapPut("/api/goals/{id:guid}", async (ClaimsPrincipal user, Guid id, UpdateGoalDto dto, [FromServices] AppDbContext db) =>
 {
     var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
     if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
@@ -957,7 +1134,7 @@ app.MapPut("/api/goals/{id:guid}", async (ClaimsPrincipal user, Guid id, UpdateG
     ));
 }).RequireAuthorization();
 
-app.MapDelete("/api/goals/{id:guid}", async (ClaimsPrincipal user, Guid id, AppDbContext db) =>
+app.MapDelete("/api/goals/{id:guid}", async (ClaimsPrincipal user, Guid id, [FromServices] AppDbContext db) =>
 {
     var email = user.FindFirstValue(ClaimTypes.Email) ?? user.FindFirstValue(JwtRegisteredClaimNames.Email);
     if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
@@ -998,3 +1175,4 @@ record UpdateGoalDto(bool Done);
 record UpdatePreferencesDto(string? Name, string? BirthDate);
 record CheckoutReq(string PriceId, string? SuccessUrl, string? CancelUrl);
 record PortalReq(string? ReturnUrl);
+record SyncReq(string? SubscriptionId, string? CustomerId, string? Email);
