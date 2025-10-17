@@ -86,5 +86,6 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
              .IsUnique()
              .HasDatabaseName("ux_subscriptions_user_active");
         });
+
     }
 }
