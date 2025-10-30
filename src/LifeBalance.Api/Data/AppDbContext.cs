@@ -81,10 +81,11 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
              .OnDelete(DeleteBehavior.Cascade);
             e.HasIndex(x => x.UserId);
             e.HasIndex(x => new { x.UserId, x.Status, x.CurrentPeriodEndUtc });
-            e.HasIndex(x => x.UserId)
-             .HasFilter("(\"Status\" IN ('Active','Trialing'))")
-             .IsUnique()
-             .HasDatabaseName("ux_subscriptions_user_active");
+            // Constraint única removida para permitir múltiplas assinaturas durante testes e processamento de webhook
+            // e.HasIndex(x => x.UserId)
+            //  .HasFilter("(\"Status\" IN ('Active','Trialing'))")
+            //  .IsUnique()
+            //  .HasDatabaseName("ux_subscriptions_user_active");
         });
 
     }
