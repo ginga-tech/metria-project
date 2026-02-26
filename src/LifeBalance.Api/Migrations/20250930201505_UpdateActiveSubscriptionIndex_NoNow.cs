@@ -2,7 +2,7 @@
 
 #nullable disable
 
-namespace LifeBalance.Api.Migrations
+namespace Metria.Api.Migrations
 {
     /// <inheritdoc />
     public partial class UpdateActiveSubscriptionIndex_NoNow : Migration

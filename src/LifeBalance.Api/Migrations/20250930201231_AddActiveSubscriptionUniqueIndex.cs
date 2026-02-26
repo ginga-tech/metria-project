@@ -2,7 +2,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
-namespace LifeBalance.Api.Migrations
+namespace Metria.Api.Migrations
 {
     /// <inheritdoc />
     public partial class AddActiveSubscriptionUniqueIndex : Migration

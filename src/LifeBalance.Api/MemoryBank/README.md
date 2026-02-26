@@ -1,4 +1,4 @@
-LifeBalance API — MemoryBank
+Metria API — MemoryBank
 
 Purpose
 - Centralize knowledge for humans/AI: architecture, env, Stripe notes, and future items.

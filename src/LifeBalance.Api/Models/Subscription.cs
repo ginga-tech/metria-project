@@ -1,6 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 
-namespace LifeBalance.Api.Models;
+namespace Metria.Api.Models;
 
 public enum SubscriptionStatus
 {

@@ -1,4 +1,4 @@
-﻿namespace LifeBalance.Api.Models;
+﻿namespace Metria.Api.Models;
 
 public class Assessment
 {

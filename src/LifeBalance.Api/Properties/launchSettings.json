@@ -1,6 +1,6 @@
 {
   "profiles": {
-    "LifeBalance.Api": {
+    "Metria.Api": {
       "commandName": "Project",
       "launchBrowser": true,
       "environmentVariables": {

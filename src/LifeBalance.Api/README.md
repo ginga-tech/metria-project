@@ -1,4 +1,4 @@
-LifeBalance.Api — Stripe Webhook Setup (Produção)
+Metria.Api — Stripe Webhook Setup (Produção)
 
 Passos para configurar o Webhook do Stripe e chaves de produção.
 
