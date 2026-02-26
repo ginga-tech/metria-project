@@ -1,6 +1,6 @@
-using LifeBalance.Api.Models;
+using Metria.Api.Models;
 
-namespace LifeBalance.Api.Repositories;
+namespace Metria.Api.Repositories;
 
 public interface ISubscriptionRepository
 {

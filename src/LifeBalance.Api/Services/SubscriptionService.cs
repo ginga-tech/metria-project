@@ -1,7 +1,7 @@
-using LifeBalance.Api.Models;
-using LifeBalance.Api.Repositories;
+using Metria.Api.Models;
+using Metria.Api.Repositories;
 
-namespace LifeBalance.Api.Services;
+namespace Metria.Api.Services;
 
 public class SubscriptionService(ISubscriptionRepository repo)
     : ISubscriptionService

@@ -1,7 +1,7 @@
-﻿using LifeBalance.Api.Models;
+﻿using Metria.Api.Models;
 using Microsoft.EntityFrameworkCore;
 
-namespace LifeBalance.Api.Data;
+namespace Metria.Api.Data;
 
 public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {

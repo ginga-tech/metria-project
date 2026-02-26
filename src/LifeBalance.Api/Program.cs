@@ -1,8 +1,8 @@
-﻿using LifeBalance.Api.Data;
-using LifeBalance.Api.Models;
-using LifeBalance.Api.Repositories;
-using LifeBalance.Api.Services;
-using LifeBalance.API.Models.Enums;
+﻿using Metria.Api.Data;
+using Metria.Api.Models;
+using Metria.Api.Repositories;
+using Metria.Api.Services;
+using Metria.API.Models.Enums;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -23,7 +23,7 @@ using CheckoutLineItemOptions = Stripe.Checkout.SessionLineItemOptions;
 using CheckoutSession = Stripe.Checkout.Session;
 using CheckoutSessionCreateOptions = Stripe.Checkout.SessionCreateOptions;
 using CheckoutSessionService = Stripe.Checkout.SessionService;
-using DbSubscription = LifeBalance.Api.Models.Subscription;
+using DbSubscription = Metria.Api.Models.Subscription;
 using StripeSubscription = Stripe.Subscription;
 using StripeSubscriptionService = Stripe.SubscriptionService;
 
@@ -84,7 +84,7 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddHttpClient();
 builder.Services.AddMemoryCache();
 builder.Services.AddScoped<ISubscriptionRepository, SubscriptionRepository>();
-builder.Services.AddScoped<ISubscriptionService, LifeBalance.Api.Services.SubscriptionService>();
+builder.Services.AddScoped<ISubscriptionService, Metria.Api.Services.SubscriptionService>();
 
 // Configure JSON options to handle string enums
 builder.Services.ConfigureHttpJsonOptions(options =>

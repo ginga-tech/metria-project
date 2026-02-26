@@ -1,4 +1,4 @@
-namespace LifeBalance.API.Models.Enums;
+namespace Metria.API.Models.Enums;
 
 public enum GoalPeriod
 {

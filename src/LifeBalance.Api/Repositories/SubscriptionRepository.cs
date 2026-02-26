@@ -1,8 +1,8 @@
-using LifeBalance.Api.Data;
-using LifeBalance.Api.Models;
+using Metria.Api.Data;
+using Metria.Api.Models;
 using Microsoft.EntityFrameworkCore;
 
-namespace LifeBalance.Api.Repositories;
+namespace Metria.Api.Repositories;
 
 public class SubscriptionRepository(AppDbContext db) : ISubscriptionRepository
 {

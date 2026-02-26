@@ -1,7 +1,7 @@
-using LifeBalance.API.Models.Enums;
+using Metria.API.Models.Enums;
 using System.ComponentModel.DataAnnotations;
 
-namespace LifeBalance.Api.Models;
+namespace Metria.Api.Models;
 
 public class Goal
 {
