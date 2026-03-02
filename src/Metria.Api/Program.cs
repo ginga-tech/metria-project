@@ -5,6 +5,7 @@ using Metria.Api.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Npgsql;
 using System.Text;
 using System.Text.Json.Serialization;
 
@@ -52,11 +53,14 @@ builder.Services
 builder.Services.AddAuthorization();
 
 var conn = Environment.GetEnvironmentVariable("POSTGRES_CONNECTION")
+           ?? Environment.GetEnvironmentVariable("DATABASE_URL")
            ?? config.GetConnectionString("Postgres");
 if (string.IsNullOrWhiteSpace(conn))
 {
-    throw new InvalidOperationException("Missing Postgres connection string. Set POSTGRES_CONNECTION or ConnectionStrings:Postgres");
+    throw new InvalidOperationException("Missing Postgres connection string. Set POSTGRES_CONNECTION, DATABASE_URL or ConnectionStrings:Postgres");
 }
+
+conn = NormalizePostgresConnectionString(conn);
 
 builder.Services.AddDbContext<AppDbContext>(opt =>
     opt.UseNpgsql(conn, o => o.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery)));
@@ -105,4 +109,64 @@ app.MapAssessmentEndpoints();
 app.MapGoalsEndpoints();
 
 app.Run();
+
+static string NormalizePostgresConnectionString(string raw)
+{
+    if (!raw.StartsWith("postgres://", StringComparison.OrdinalIgnoreCase) &&
+        !raw.StartsWith("postgresql://", StringComparison.OrdinalIgnoreCase))
+    {
+        return raw;
+    }
+
+    var uri = new Uri(raw);
+    var userInfo = uri.UserInfo.Split(':', 2);
+    if (userInfo.Length != 2)
+    {
+        throw new InvalidOperationException("Invalid DATABASE_URL format: missing username/password.");
+    }
+
+    var builder = new NpgsqlConnectionStringBuilder
+    {
+        Host = uri.Host,
+        Port = uri.Port > 0 ? uri.Port : 5432,
+        Database = uri.AbsolutePath.Trim('/'),
+        Username = Uri.UnescapeDataString(userInfo[0]),
+        Password = Uri.UnescapeDataString(userInfo[1]),
+        SslMode = SslMode.Require
+    };
+
+    if (!string.IsNullOrWhiteSpace(uri.Query))
+    {
+        var query = uri.Query.TrimStart('?');
+        foreach (var part in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var kv = part.Split('=', 2);
+            if (kv.Length != 2) continue;
+
+            var key = Uri.UnescapeDataString(kv[0]);
+            var value = Uri.UnescapeDataString(kv[1]);
+
+            if (key.Equals("sslmode", StringComparison.OrdinalIgnoreCase))
+            {
+                if (Enum.TryParse<SslMode>(value, true, out var mode))
+                {
+                    builder.SslMode = mode;
+                }
+            }
+            else if (key.Equals("ssl", StringComparison.OrdinalIgnoreCase))
+            {
+                if (value.Equals("true", StringComparison.OrdinalIgnoreCase))
+                {
+                    builder.SslMode = SslMode.Require;
+                }
+                else if (value.Equals("false", StringComparison.OrdinalIgnoreCase))
+                {
+                    builder.SslMode = SslMode.Disable;
+                }
+            }
+        }
+    }
+
+    return builder.ConnectionString;
+}
 
