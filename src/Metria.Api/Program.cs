@@ -78,12 +78,14 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 });
 
 var app = builder.Build();
+var enableSwagger = app.Environment.IsDevelopment() ||
+                   string.Equals(Environment.GetEnvironmentVariable("ENABLE_SWAGGER"), "true", StringComparison.OrdinalIgnoreCase);
 
 app.UseCors("frontend");
 app.UseAuthentication();
 app.UseAuthorization();
 
-if (app.Environment.IsDevelopment())
+if (enableSwagger)
 {
     app.UseSwagger();
     app.UseSwaggerUI(c =>
