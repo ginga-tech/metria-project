@@ -105,7 +105,7 @@ public static class AuthEndpoints
             authUrl.Append("&client_id=").Append(Uri.EscapeDataString(clientId));
             authUrl.Append("&redirect_uri=").Append(Uri.EscapeDataString(callback));
             authUrl.Append("&scope=").Append(Uri.EscapeDataString("openid email profile"));
-            authUrl.Append("&access_type=offline&include_granted_scopes=true&prompt=consent");
+            authUrl.Append("&include_granted_scopes=true&prompt=select_account");
             if (!string.IsNullOrEmpty(state)) authUrl.Append("&state=").Append(Uri.EscapeDataString(state));
         
             return Results.Redirect(authUrl.ToString());
