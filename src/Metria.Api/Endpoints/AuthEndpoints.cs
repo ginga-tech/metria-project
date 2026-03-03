@@ -133,13 +133,56 @@ public static class AuthEndpoints
                 } catch {}
             }
         
-            // Decide front: FrontendCallback > decode(state) > "/"
-            var front = cfg["FrontendCallback"];
-            if (string.IsNullOrEmpty(front) && !string.IsNullOrEmpty(state)) front = Encoding.UTF8.GetString(Convert.FromBase64String(state));
-            if (string.IsNullOrEmpty(front)) front = "/";
+            // Decide front redirect in a resilient way:
+            // 1) state (when valid base64 + absolute URL)
+            // 2) FrontendCallback / FRONTEND_CALLBACK
+            // 3) FrontendOrigin / FRONTEND_ORIGIN + "/oauth/callback"
+            // 4) Local fallback (never "/")
+            var configuredFrontendCallback =
+                Environment.GetEnvironmentVariable("FRONTEND_CALLBACK")
+                ?? cfg["FrontendCallback"];
+
+            var configuredFrontendOrigin =
+                Environment.GetEnvironmentVariable("FRONTEND_ORIGIN")
+                ?? cfg["FrontendOrigin"];
+
+            string? frontFromState = null;
+            if (!string.IsNullOrWhiteSpace(state))
+            {
+                try
+                {
+                    var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(state));
+                    if (Uri.TryCreate(decoded, UriKind.Absolute, out _))
+                    {
+                        frontFromState = decoded;
+                    }
+                }
+                catch
+                {
+                    // Invalid/garbled state should not break OAuth flow.
+                    // Fallbacks below handle this case.
+                }
+            }
+
+            var front = frontFromState;
+            if (string.IsNullOrWhiteSpace(front))
+            {
+                front = configuredFrontendCallback;
+            }
+
+            if (string.IsNullOrWhiteSpace(front) && !string.IsNullOrWhiteSpace(configuredFrontendOrigin))
+            {
+                front = configuredFrontendOrigin.TrimEnd('/') + "/oauth/callback";
+            }
+
+            if (string.IsNullOrWhiteSpace(front))
+            {
+                front = "http://localhost:5173/oauth/callback";
+            }
             
-            if (front.Contains("localhost:5174")) {
-                front = front.Replace("localhost:5174", "localhost:5173");
+            if (front.Contains("localhost:5174", StringComparison.OrdinalIgnoreCase))
+            {
+                front = front.Replace("localhost:5174", "localhost:5173", StringComparison.OrdinalIgnoreCase);
             }
         
             if (string.IsNullOrEmpty(code))
