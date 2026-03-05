@@ -484,7 +484,7 @@ public static class BillingEndpoints
                                 && string.Equals(session.PaymentStatus, "paid", StringComparison.OrdinalIgnoreCase))
                             {
                                 // Payment Link (one-time payment) fallback.
-                                await UpsertPaymentLinkPurchase(session, userId, db, cfg, log);
+                                _ = await UpsertPaymentLinkPurchase(session, userId, db, cfg, log);
                             }
                             else
                             {
@@ -632,7 +632,7 @@ public static class BillingEndpoints
             log.LogInformation("Upserted subscription {SubscriptionId} for user {UserId}", stripeSubscription.Id, userId);
         }
 
-        async Task UpsertPaymentLinkPurchase(CheckoutSession session, Guid userId, AppDbContext db,
+        async Task<SubscriptionPlan> UpsertPaymentLinkPurchase(CheckoutSession session, Guid userId, AppDbContext db,
             IConfiguration cfg, ILogger<Program> log)
         {
             var monthlyPaymentLinkId = Environment.GetEnvironmentVariable("STRIPE_MONTHLY_PAYMENT_LINK_ID") ?? cfg["Stripe:MonthlyPaymentLinkId"];
@@ -710,6 +710,7 @@ public static class BillingEndpoints
             log.LogInformation(
                 "Upserted payment-link entitlement. sessionId={SessionId} userId={UserId} plan={Plan} periodEnd={End} paymentLinkId={PaymentLinkId}",
                 session.Id, userId, plan, end, session.PaymentLinkId);
+            return plan;
         }
         
         // Billing: Sync manual (reconciliação) — tenta buscar no Stripe e fazer upsert
@@ -724,6 +725,7 @@ public static class BillingEndpoints
             var subService = new StripeSubscriptionService();
             var custService = new Stripe.CustomerService();
             StripeSubscription? sub = null;
+            CheckoutSession? checkoutSessionCandidate = null;
             string? emailHintFromCheckout = null;
         
             try
@@ -737,6 +739,7 @@ public static class BillingEndpoints
                     {
                         var checkoutService = new CheckoutSessionService();
                         var checkoutSession = await checkoutService.GetAsync(req.CheckoutSessionId);
+                        checkoutSessionCandidate = checkoutSession;
 
                         emailHintFromCheckout = checkoutSession.CustomerDetails?.Email ?? checkoutSession.CustomerEmail;
 
@@ -854,6 +857,65 @@ public static class BillingEndpoints
             {
                 log.LogError(ex, "/api/billing/sync failed to fetch subscription from Stripe");
                 return Results.BadRequest($"Falha ao consultar Stripe: {ex.Message}");
+            }
+
+            if (sub == null)
+            {
+                var paymentSession = checkoutSessionCandidate;
+                var targetEmail = !string.IsNullOrWhiteSpace(req.Email)
+                    ? req.Email!.Trim().ToLowerInvariant()
+                    : (!string.IsNullOrWhiteSpace(emailHintFromCheckout)
+                        ? emailHintFromCheckout.Trim().ToLowerInvariant()
+                        : emailFromToken);
+
+                if (paymentSession == null)
+                {
+                    try
+                    {
+                        var checkoutService = new CheckoutSessionService();
+                        var recentSessions = await checkoutService.ListAsync(new Stripe.Checkout.SessionListOptions { Limit = 30 });
+
+                        paymentSession = recentSessions.Data?
+                            .Where(session =>
+                                string.Equals(session.Mode, "payment", StringComparison.OrdinalIgnoreCase) &&
+                                string.Equals(session.PaymentStatus, "paid", StringComparison.OrdinalIgnoreCase) &&
+                                string.Equals(session.Status, "complete", StringComparison.OrdinalIgnoreCase) &&
+                                string.Equals((session.CustomerDetails?.Email ?? session.CustomerEmail)?.Trim(), targetEmail, StringComparison.OrdinalIgnoreCase))
+                            .OrderByDescending(session => session.Created)
+                            .FirstOrDefault();
+
+                        if (paymentSession != null)
+                        {
+                            log.LogInformation(
+                                "Resolved paid checkout session by email during sync. sessionId={SessionId} email={Email}",
+                                paymentSession.Id, targetEmail);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        log.LogWarning(ex, "Failed to list recent checkout sessions for email fallback");
+                    }
+                }
+
+                if (paymentSession != null &&
+                    string.Equals(paymentSession.Mode, "payment", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(paymentSession.PaymentStatus, "paid", StringComparison.OrdinalIgnoreCase))
+                {
+                    var sessionEmail = paymentSession.CustomerDetails?.Email ?? paymentSession.CustomerEmail;
+                    var resolvedUser = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Email == emailFromToken);
+                    if (!string.IsNullOrWhiteSpace(sessionEmail))
+                    {
+                        resolvedUser = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Email == sessionEmail) ?? resolvedUser;
+                    }
+
+                    if (resolvedUser != null)
+                    {
+                        var mappedPlan = await UpsertPaymentLinkPurchase(paymentSession, resolvedUser.Id, db, cfg, log);
+                        log.LogInformation("/api/billing/sync SUCCESS via payment session: sessionId={SessionId} userId={UserId} plan={Plan}",
+                            paymentSession.Id, resolvedUser.Id, mappedPlan);
+                        return Results.Ok(new { ok = true, subId = paymentSession.Id, status = "active", plan = mappedPlan.ToString().ToLowerInvariant() });
+                    }
+                }
             }
         
             if (sub == null) 
