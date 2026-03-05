@@ -292,8 +292,23 @@ public static class BillingEndpoints
             var json = await reader.ReadToEndAsync();
             var hasSignatureHeader = http.Headers.ContainsKey("Stripe-Signature");
             var signature = http.Headers["Stripe-Signature"].ToString();
-            var webhookSecret = Environment.GetEnvironmentVariable("STRIPE_WEBHOOK_SECRET") ?? cfg["Stripe:WebhookSecret"];
-            var webhookSecretLength = webhookSecret?.Length ?? 0;
+            var webhookSecretFromEnv = Environment.GetEnvironmentVariable("STRIPE_WEBHOOK_SECRET");
+            var webhookSecretFromConfig = cfg["Stripe:WebhookSecret"];
+            var webhookSecrets = new List<string>();
+            foreach (var source in new[] { webhookSecretFromEnv, webhookSecretFromConfig })
+            {
+                if (string.IsNullOrWhiteSpace(source)) continue;
+                foreach (var rawPart in source.Split(new[] { ',', ';', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var candidate = rawPart.Trim().Trim('"').Trim('\'');
+                    if (!string.IsNullOrWhiteSpace(candidate) && !webhookSecrets.Contains(candidate))
+                    {
+                        webhookSecrets.Add(candidate);
+                    }
+                }
+            }
+            var webhookSecretLength = webhookSecrets.Count > 0 ? webhookSecrets[0].Length : 0;
+            var webhookSecretLengths = webhookSecrets.Count > 0 ? string.Join(",", webhookSecrets.Select(secret => secret.Length)) : "none";
             string? rawEventId = null;
             try
             {
@@ -308,7 +323,7 @@ public static class BillingEndpoints
                 // Best-effort parse only for observability in signature failures.
             }
             
-            if (string.IsNullOrWhiteSpace(webhookSecret)) 
+            if (webhookSecrets.Count == 0) 
             {
                 log.LogError(
                     "Webhook secret not configured. EventId={EventId} SecretLen={SecretLen} HasStripeSignatureHeader={HasStripeSignatureHeader}",
@@ -318,18 +333,30 @@ public static class BillingEndpoints
                 return Results.BadRequest("Webhook secret não configurado");
             }
         
-            Event stripeEvent;
-            try 
+            Event? stripeEvent = null;
+            Exception? lastSignatureValidationError = null;
+            foreach (var webhookSecret in webhookSecrets)
             {
-                stripeEvent = EventUtility.ConstructEvent(json, signature, webhookSecret);
-            } 
-            catch (Exception ex) 
+                try
+                {
+                    stripeEvent = EventUtility.ConstructEvent(json, signature, webhookSecret);
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    lastSignatureValidationError = ex;
+                }
+            }
+
+            if (stripeEvent is null)
             {
                 log.LogError(
-                    ex,
-                    "Stripe webhook signature validation failed. EventId={EventId} SecretLen={SecretLen} HasStripeSignatureHeader={HasStripeSignatureHeader} HasSignatureValue={HasSignatureValue} PayloadLen={PayloadLen}",
+                    lastSignatureValidationError,
+                    "Stripe webhook signature validation failed. EventId={EventId} SecretLen={SecretLen} SecretCandidateCount={SecretCandidateCount} SecretCandidateLens={SecretCandidateLens} HasStripeSignatureHeader={HasStripeSignatureHeader} HasSignatureValue={HasSignatureValue} PayloadLen={PayloadLen}",
                     rawEventId ?? "unknown",
                     webhookSecretLength,
+                    webhookSecrets.Count,
+                    webhookSecretLengths,
                     hasSignatureHeader,
                     !string.IsNullOrWhiteSpace(signature),
                     json?.Length ?? 0);
