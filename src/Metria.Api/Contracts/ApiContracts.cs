@@ -9,6 +9,6 @@ public record GoalDto(Guid Id, string Text, bool Done, string Period, string Sta
 public record CreateGoalDto(string Text, GoalPeriod Period, DateTime StartDate, DateTime EndDate, string? Category);
 public record UpdateGoalDto(bool Done);
 public record UpdatePreferencesDto(string? Name, string? BirthDate);
-public record CheckoutReq(string PriceId, string? SuccessUrl, string? CancelUrl);
+public record CheckoutReq(string? PriceId, string? SuccessUrl, string? CancelUrl, string? Plan);
 public record PortalReq(string? ReturnUrl);
 public record SyncReq(string? SubscriptionId, string? CustomerId, string? Email, string? CheckoutSessionId);

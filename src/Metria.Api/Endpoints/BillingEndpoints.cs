@@ -181,20 +181,46 @@ public static class BillingEndpoints
         // Billing: create Checkout Session (Stripe)
         billing.MapPost("/checkout", async (ClaimsPrincipal user, CheckoutReq req, [FromServices] AppDbContext db, [FromServices] IConfiguration cfg, [FromServices] ILogger<Program> log) =>
         {
+            var safeReq = req ?? new CheckoutReq(null, null, null, null);
             var email = user.GetEmail();
             if (string.IsNullOrWhiteSpace(email)) return Results.Unauthorized();
         
             var u = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Email == email);
             if (u is null) return Results.Unauthorized();
+
+            var requestedPlan = (safeReq.Plan ?? string.Empty).Trim().ToLowerInvariant();
+            var effectivePriceId = safeReq.PriceId;
+            if (string.IsNullOrWhiteSpace(effectivePriceId))
+            {
+                if (requestedPlan == "monthly")
+                {
+                    effectivePriceId = Environment.GetEnvironmentVariable("STRIPE_MONTHLY_PRICE_ID") ?? cfg["Stripe:MonthlyPriceId"];
+                }
+                else if (requestedPlan == "annual")
+                {
+                    effectivePriceId = Environment.GetEnvironmentVariable("STRIPE_ANNUAL_PRICE_ID") ?? cfg["Stripe:AnnualPriceId"];
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(effectivePriceId))
+            {
+                if (requestedPlan == "monthly")
+                {
+                    return Results.BadRequest("Preço mensal não configurado no backend.");
+                }
+                if (requestedPlan == "annual")
+                {
+                    return Results.BadRequest("Preço anual não configurado no backend.");
+                }
+                return Results.BadRequest("priceId ou plan obrigatório");
+            }
         
-            if (string.IsNullOrWhiteSpace(req?.PriceId)) return Results.BadRequest("priceId obrigatório");
-        
-            var successUrl = string.IsNullOrWhiteSpace(req.SuccessUrl)
+            var successUrl = string.IsNullOrWhiteSpace(safeReq.SuccessUrl)
                 ? ($"{(cfg["FrontendOrigin"] ?? "http://localhost:5173").TrimEnd('/')}/dashboard?checkout=success")
-                : req.SuccessUrl;
-            var cancelUrl = string.IsNullOrWhiteSpace(req.CancelUrl)
+                : safeReq.SuccessUrl;
+            var cancelUrl = string.IsNullOrWhiteSpace(safeReq.CancelUrl)
                 ? ($"{(cfg["FrontendOrigin"] ?? "http://localhost:5173").TrimEnd('/')}/dashboard?checkout=cancel")
-                : req.CancelUrl;
+                : safeReq.CancelUrl;
         
             // Tenta vincular a sessão a um Customer do Stripe com o e-mail do usuário
             string? customerId = null;
@@ -235,7 +261,7 @@ public static class BillingEndpoints
                 ClientReferenceId = u.Id.ToString(),
                 LineItems = new List<CheckoutLineItemOptions>
                 {
-                    new CheckoutLineItemOptions { Price = req.PriceId, Quantity = 1 }
+                    new CheckoutLineItemOptions { Price = effectivePriceId, Quantity = 1 }
                 }
             };
             if (!string.IsNullOrWhiteSpace(customerId))
@@ -248,7 +274,7 @@ public static class BillingEndpoints
             }
         
             var service = new CheckoutSessionService();
-            log.LogInformation("POST /api/billing/checkout -> user {Email} ({UserId}) price={PriceId} success={Success} cancel={Cancel}", email, u.Id, req.PriceId, successUrl, cancelUrl);
+            log.LogInformation("POST /api/billing/checkout -> user {Email} ({UserId}) plan={Plan} price={PriceId} success={Success} cancel={Cancel}", email, u.Id, requestedPlan, effectivePriceId, successUrl, cancelUrl);
             var session = await service.CreateAsync(options);
             log.LogInformation("Checkout Session created: id={SessionId} url={Url}", session.Id, session.Url);
             return Results.Ok(new { url = session.Url });
