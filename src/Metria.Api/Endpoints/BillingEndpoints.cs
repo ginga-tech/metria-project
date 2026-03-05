@@ -228,17 +228,9 @@ public static class BillingEndpoints
                 {
                     return Results.BadRequest("Preço Stripe está inativo.");
                 }
-                if (!string.Equals(stripePrice.Type, "recurring", StringComparison.OrdinalIgnoreCase) || stripePrice.Recurring == null)
+                if (string.Equals(stripePrice.Type, "recurring", StringComparison.OrdinalIgnoreCase) || stripePrice.Recurring != null)
                 {
-                    return Results.BadRequest("Preço Stripe configurado não é recorrente (subscription).");
-                }
-                if (requestedPlan == "monthly" && !string.Equals(stripePrice.Recurring.Interval, "month", StringComparison.OrdinalIgnoreCase))
-                {
-                    return Results.BadRequest("Preço mensal configurado não possui recorrência mensal.");
-                }
-                if (requestedPlan == "annual" && !string.Equals(stripePrice.Recurring.Interval, "year", StringComparison.OrdinalIgnoreCase))
-                {
-                    return Results.BadRequest("Preço anual configurado não possui recorrência anual.");
+                    return Results.BadRequest("Preço Stripe configurado deve ser one-time para este fluxo.");
                 }
             }
             catch (StripeException ex)
@@ -287,10 +279,15 @@ public static class BillingEndpoints
         
             var options = new CheckoutSessionCreateOptions
             {
-                Mode = "subscription",
+                Mode = "payment",
                 SuccessUrl = successUrl,
                 CancelUrl = cancelUrl,
                 ClientReferenceId = u.Id.ToString(),
+                Metadata = new Dictionary<string, string>
+                {
+                    ["plan"] = requestedPlan,
+                    ["price_id"] = effectivePriceId
+                },
                 LineItems = new List<CheckoutLineItemOptions>
                 {
                     new CheckoutLineItemOptions { Price = effectivePriceId, Quantity = 1 }
@@ -540,12 +537,18 @@ public static class BillingEndpoints
                                 return false;
                             }
         
-                            // Process subscription if present
+                            // Recurring subscription flow
                             if (!string.IsNullOrWhiteSpace(session.SubscriptionId))
                             {
                                 var subsService = new StripeSubscriptionService();
                                 var sub = await subsService.GetAsync(session.SubscriptionId);
                                 await UpsertSubscription(sub, userId, db, cfg, log);
+                            }
+                            // One-time payment flow with local validity control
+                            else if (string.Equals(session.Mode, "payment", StringComparison.OrdinalIgnoreCase)
+                                && string.Equals(session.PaymentStatus, "paid", StringComparison.OrdinalIgnoreCase))
+                            {
+                                await UpsertOneTimePurchase(session, userId, cfg, db, log);
                             }
                             else
                             {
@@ -693,6 +696,83 @@ public static class BillingEndpoints
             log.LogInformation("Upserted subscription {SubscriptionId} for user {UserId}", stripeSubscription.Id, userId);
         }
 
+        async Task<(SubscriptionPlan plan, DateTime end)> UpsertOneTimePurchase(CheckoutSession checkoutSession, Guid userId, IConfiguration cfg, AppDbContext db, ILogger<Program> log)
+        {
+            var configuredMonthly = Environment.GetEnvironmentVariable("STRIPE_MONTHLY_PRICE_ID") ?? cfg["Stripe:MonthlyPriceId"];
+            var configuredAnnual = Environment.GetEnvironmentVariable("STRIPE_ANNUAL_PRICE_ID") ?? cfg["Stripe:AnnualPriceId"];
+
+            checkoutSession.Metadata ??= new Dictionary<string, string>();
+            checkoutSession.Metadata.TryGetValue("plan", out var planFromMetadata);
+            checkoutSession.Metadata.TryGetValue("price_id", out var priceIdFromMetadata);
+
+            var plan = SubscriptionPlan.Monthly;
+            if (string.Equals(planFromMetadata, "annual", StringComparison.OrdinalIgnoreCase) ||
+                (!string.IsNullOrWhiteSpace(priceIdFromMetadata) && string.Equals(priceIdFromMetadata, configuredAnnual, StringComparison.Ordinal)))
+            {
+                plan = SubscriptionPlan.Annual;
+            }
+
+            var now = DateTime.UtcNow;
+            var end = plan == SubscriptionPlan.Annual ? now.AddYears(1) : now.AddMonths(1);
+
+            var activeSubscriptions = await db.Subscriptions
+                .Where(s => s.UserId == userId &&
+                           (s.Status == SubscriptionStatus.Active || s.Status == SubscriptionStatus.Trialing) &&
+                           s.ProviderSubscriptionId != checkoutSession.Id)
+                .ToListAsync();
+
+            foreach (var activeSub in activeSubscriptions)
+            {
+                activeSub.Status = SubscriptionStatus.Canceled;
+                activeSub.CanceledAtUtc = now;
+                activeSub.UpdatedAtUtc = now;
+            }
+
+            var existing = await db.Subscriptions
+                .FirstOrDefaultAsync(s => s.ProviderSubscriptionId == checkoutSession.Id);
+
+            var providerPriceId = priceIdFromMetadata
+                ?? (plan == SubscriptionPlan.Annual ? configuredAnnual : configuredMonthly);
+
+            if (existing == null)
+            {
+                existing = new DbSubscription
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = userId,
+                    Provider = "stripe",
+                    ProviderCustomerId = checkoutSession.CustomerId,
+                    ProviderSubscriptionId = checkoutSession.Id,
+                    ProviderPriceId = providerPriceId,
+                    Plan = plan,
+                    Status = SubscriptionStatus.Active,
+                    StartedAtUtc = now,
+                    CurrentPeriodStartUtc = now,
+                    CurrentPeriodEndUtc = end,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                };
+                db.Subscriptions.Add(existing);
+            }
+            else
+            {
+                existing.UserId = userId;
+                existing.ProviderCustomerId = checkoutSession.CustomerId;
+                existing.ProviderPriceId = providerPriceId ?? existing.ProviderPriceId;
+                existing.Plan = plan;
+                existing.Status = SubscriptionStatus.Active;
+                existing.StartedAtUtc ??= now;
+                existing.CurrentPeriodStartUtc = now;
+                existing.CurrentPeriodEndUtc = end;
+                existing.CanceledAtUtc = null;
+                existing.UpdatedAtUtc = now;
+            }
+
+            await db.SaveChangesAsync();
+            log.LogInformation("Upserted one-time purchase {SessionId} for user {UserId}. plan={Plan} validUntil={ValidUntil}", checkoutSession.Id, userId, plan, end);
+            return (plan, end);
+        }
+
         // Billing: Sync manual (reconciliação) — tenta buscar no Stripe e fazer upsert
         billing.MapPost("/sync", async (ClaimsPrincipal user, SyncReq req, [FromServices] AppDbContext db, [FromServices] IConfiguration cfg, [FromServices] ILogger<Program> log) =>
         {
@@ -705,6 +785,7 @@ public static class BillingEndpoints
             var subService = new StripeSubscriptionService();
             var custService = new Stripe.CustomerService();
             StripeSubscription? sub = null;
+            CheckoutSession? checkoutSessionCandidate = null;
             string? emailHintFromCheckout = null;
         
             try
@@ -718,6 +799,7 @@ public static class BillingEndpoints
                     {
                         var checkoutService = new CheckoutSessionService();
                         var checkoutSession = await checkoutService.GetAsync(req.CheckoutSessionId);
+                        checkoutSessionCandidate = checkoutSession;
 
                         emailHintFromCheckout = checkoutSession.CustomerDetails?.Email ?? checkoutSession.CustomerEmail;
 
@@ -835,6 +917,23 @@ public static class BillingEndpoints
             {
                 log.LogError(ex, "/api/billing/sync failed to fetch subscription from Stripe");
                 return Results.BadRequest($"Falha ao consultar Stripe: {ex.Message}");
+            }
+
+            // One-time flow reconciliation by checkout session.
+            if (sub == null && checkoutSessionCandidate != null
+                && string.Equals(checkoutSessionCandidate.Mode, "payment", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(checkoutSessionCandidate.PaymentStatus, "paid", StringComparison.OrdinalIgnoreCase))
+            {
+                var sessionEmail = checkoutSessionCandidate.CustomerDetails?.Email ?? checkoutSessionCandidate.CustomerEmail ?? emailFromToken;
+                var userRecord = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Email == sessionEmail)
+                                 ?? await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Email == emailFromToken);
+                if (userRecord != null)
+                {
+                    var (oneTimePlan, _) = await UpsertOneTimePurchase(checkoutSessionCandidate, userRecord.Id, cfg, db, log);
+                    log.LogInformation("/api/billing/sync SUCCESS via one-time checkout: sessionId={SessionId} userId={UserId} plan={Plan}",
+                        checkoutSessionCandidate.Id, userRecord.Id, oneTimePlan);
+                    return Results.Ok(new { ok = true, subId = checkoutSessionCandidate.Id, status = "active", plan = oneTimePlan.ToString().ToLowerInvariant() });
+                }
             }
 
             if (sub == null) 
