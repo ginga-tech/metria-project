@@ -360,7 +360,36 @@ public static class BillingEndpoints
                     hasSignatureHeader,
                     !string.IsNullOrWhiteSpace(signature),
                     json?.Length ?? 0);
-                return Results.BadRequest("Invalid webhook signature");
+
+                // Fallback: validate event authenticity by fetching it directly from Stripe API.
+                // Useful when intermediary infra changes request body/signature formatting.
+                if (!string.IsNullOrWhiteSpace(rawEventId))
+                {
+                    try
+                    {
+                        var eventService = new EventService();
+                        var fetchedEvent = await eventService.GetAsync(rawEventId);
+                        if (fetchedEvent != null && string.Equals(fetchedEvent.Id, rawEventId, StringComparison.Ordinal))
+                        {
+                            stripeEvent = fetchedEvent;
+                            log.LogWarning(
+                                "Stripe webhook signature failed, but event was verified via Stripe API fallback. EventId={EventId}",
+                                rawEventId);
+                        }
+                    }
+                    catch (Exception fallbackEx)
+                    {
+                        log.LogError(
+                            fallbackEx,
+                            "Stripe webhook fallback verification failed. EventId={EventId}",
+                            rawEventId);
+                    }
+                }
+
+                if (stripeEvent is null)
+                {
+                    return Results.BadRequest("Invalid webhook signature");
+                }
             }
         
             log.LogInformation("Stripe webhook event received: type={Type} id={Id}", stripeEvent.Type, stripeEvent.Id);
@@ -450,6 +479,18 @@ public static class BillingEndpoints
                                 var subsService = new StripeSubscriptionService();
                                 var sub = await subsService.GetAsync(session.SubscriptionId);
                                 await UpsertSubscription(sub, userId, db, cfg, log);
+                            }
+                            else if (string.Equals(session.Mode, "payment", StringComparison.OrdinalIgnoreCase)
+                                && string.Equals(session.PaymentStatus, "paid", StringComparison.OrdinalIgnoreCase))
+                            {
+                                // Payment Link (one-time payment) fallback.
+                                await UpsertPaymentLinkPurchase(session, userId, db, cfg, log);
+                            }
+                            else
+                            {
+                                log.LogInformation(
+                                    "Checkout session without subscription/payment confirmation ignored. sessionId={SessionId} mode={Mode} paymentStatus={PaymentStatus}",
+                                    session.Id, session.Mode, session.PaymentStatus);
                             }
         
                             return true;
@@ -589,6 +630,86 @@ public static class BillingEndpoints
         
             await db.SaveChangesAsync();
             log.LogInformation("Upserted subscription {SubscriptionId} for user {UserId}", stripeSubscription.Id, userId);
+        }
+
+        async Task UpsertPaymentLinkPurchase(CheckoutSession session, Guid userId, AppDbContext db,
+            IConfiguration cfg, ILogger<Program> log)
+        {
+            var monthlyPaymentLinkId = Environment.GetEnvironmentVariable("STRIPE_MONTHLY_PAYMENT_LINK_ID") ?? cfg["Stripe:MonthlyPaymentLinkId"];
+            var annualPaymentLinkId = Environment.GetEnvironmentVariable("STRIPE_ANNUAL_PAYMENT_LINK_ID") ?? cfg["Stripe:AnnualPaymentLinkId"];
+
+            var plan = SubscriptionPlan.Monthly;
+            if (!string.IsNullOrWhiteSpace(annualPaymentLinkId) && string.Equals(session.PaymentLinkId, annualPaymentLinkId, StringComparison.Ordinal))
+            {
+                plan = SubscriptionPlan.Annual;
+            }
+            else if (!string.IsNullOrWhiteSpace(monthlyPaymentLinkId) && string.Equals(session.PaymentLinkId, monthlyPaymentLinkId, StringComparison.Ordinal))
+            {
+                plan = SubscriptionPlan.Monthly;
+            }
+            else if ((session.AmountTotal ?? 0) >= 10000)
+            {
+                // Fallback by amount when Payment Link IDs are not configured.
+                plan = SubscriptionPlan.Annual;
+            }
+
+            var now = DateTime.UtcNow;
+            var end = plan == SubscriptionPlan.Annual ? now.AddYears(1) : now.AddMonths(1);
+
+            var activeSubscriptions = await db.Subscriptions
+                .Where(s => s.UserId == userId &&
+                           (s.Status == SubscriptionStatus.Active || s.Status == SubscriptionStatus.Trialing) &&
+                           s.ProviderSubscriptionId != session.Id)
+                .ToListAsync();
+
+            foreach (var activeSub in activeSubscriptions)
+            {
+                activeSub.Status = SubscriptionStatus.Canceled;
+                activeSub.CanceledAtUtc = now;
+                activeSub.UpdatedAtUtc = now;
+            }
+
+            var subscription = await db.Subscriptions
+                .FirstOrDefaultAsync(s => s.ProviderSubscriptionId == session.Id);
+
+            if (subscription == null)
+            {
+                subscription = new DbSubscription
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = userId,
+                    Provider = "stripe",
+                    ProviderCustomerId = session.CustomerId,
+                    ProviderSubscriptionId = session.Id,
+                    ProviderPriceId = session.PaymentLinkId,
+                    Plan = plan,
+                    Status = SubscriptionStatus.Active,
+                    StartedAtUtc = now,
+                    CurrentPeriodStartUtc = now,
+                    CurrentPeriodEndUtc = end,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                };
+                db.Subscriptions.Add(subscription);
+            }
+            else
+            {
+                subscription.UserId = userId;
+                subscription.ProviderCustomerId = session.CustomerId;
+                subscription.ProviderPriceId = session.PaymentLinkId ?? subscription.ProviderPriceId;
+                subscription.Plan = plan;
+                subscription.Status = SubscriptionStatus.Active;
+                subscription.StartedAtUtc ??= now;
+                subscription.CurrentPeriodStartUtc = now;
+                subscription.CurrentPeriodEndUtc = end;
+                subscription.CanceledAtUtc = null;
+                subscription.UpdatedAtUtc = now;
+            }
+
+            await db.SaveChangesAsync();
+            log.LogInformation(
+                "Upserted payment-link entitlement. sessionId={SessionId} userId={UserId} plan={Plan} periodEnd={End} paymentLinkId={PaymentLinkId}",
+                session.Id, userId, plan, end, session.PaymentLinkId);
         }
         
         // Billing: Sync manual (reconciliação) — tenta buscar no Stripe e fazer upsert
