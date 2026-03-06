@@ -8,6 +8,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<User> Users => Set<User>();
     public DbSet<Assessment> Assessments => Set<Assessment>();
     public DbSet<Goal> Goals => Set<Goal>();
+    public DbSet<SubGoal> SubGoals => Set<SubGoal>();
     public DbSet<Subscription> Subscriptions => Set<Subscription>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -59,6 +60,26 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
              .OnDelete(DeleteBehavior.Cascade);
             e.HasIndex(x => new { x.UserId, x.Period, x.StartDate, x.EndDate });
             e.HasIndex(x => new { x.UserId, x.IsActive });
+        });
+
+        modelBuilder.Entity<SubGoal>(e =>
+        {
+            e.ToTable("sub_goals");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Text).HasMaxLength(300).IsRequired();
+            e.Property(x => x.Done).IsRequired();
+            e.Property(x => x.StartDate).IsRequired();
+            e.Property(x => x.EndDate).IsRequired();
+            e.Property(x => x.CreatedAtUtc).IsRequired();
+            e.Property(x => x.UpdatedAtUtc).IsRequired();
+            e.Property(x => x.IsActive).IsRequired().HasDefaultValue(true);
+            e.Property(x => x.UpdatedBy).HasMaxLength(200).IsRequired(false);
+            e.HasOne(x => x.Goal)
+             .WithMany(g => g.SubGoals)
+             .HasForeignKey(x => x.GoalId)
+             .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(x => new { x.GoalId, x.IsActive });
+            e.HasIndex(x => new { x.GoalId, x.StartDate, x.EndDate });
         });
 
         modelBuilder.Entity<Subscription>(e =>

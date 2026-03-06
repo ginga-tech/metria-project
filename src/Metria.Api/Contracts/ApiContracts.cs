@@ -8,6 +8,9 @@ public record AssessmentDto(Dictionary<string, int> Scores, double Average, stri
 public record GoalDto(Guid Id, string Text, bool Done, string Period, string StartDate, string EndDate, string? Category, string CreatedAtUtc);
 public record CreateGoalDto(string Text, GoalPeriod Period, DateTime StartDate, DateTime EndDate, string? Category);
 public record UpdateGoalDto(bool Done);
+public record SubGoalDto(Guid Id, Guid GoalId, string Text, bool Done, string StartDate, string EndDate, string CreatedAtUtc);
+public record CreateSubGoalDto(string Text, DateTime StartDate, DateTime EndDate);
+public record UpdateSubGoalDto(string? Text, bool? Done, DateTime? StartDate, DateTime? EndDate);
 public record UpdatePreferencesDto(string? Name, string? BirthDate);
 public record CheckoutReq(string? PriceId, string? SuccessUrl, string? CancelUrl, string? Plan);
 public record PortalReq(string? ReturnUrl);
